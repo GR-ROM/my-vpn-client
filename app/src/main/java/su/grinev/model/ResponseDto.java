@@ -11,6 +11,7 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class ResponseDto<T> {
+    private int requestId;
     private Status status;
     @BsonType(discriminator = "_dataType")
     private T data;
@@ -19,6 +20,13 @@ public class ResponseDto<T> {
         return ResponseDto.<T>builder()
                 .status(status)
                 .data(data)
+                .build();
+    }
+
+    public static <T> ResponseDto<T> ofRequest(RequestDto<?> requestDto, Status status) {
+        return ResponseDto.<T>builder()
+                .requestId(requestDto.getSeq())
+                .status(status)
                 .build();
     }
 }

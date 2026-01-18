@@ -2,6 +2,8 @@ package su.grinev.myvpn;
 
 import static su.grinev.model.Command.DISCONNECT;
 import static su.grinev.model.Command.FORWARD_PACKET;
+import static su.grinev.model.Command.PING;
+import static su.grinev.model.Status.OK;
 import static su.grinev.myvpn.NetUtils.intToIpv4;
 import static su.grinev.myvpn.NetUtils.ipv4ToIntBytes;
 import static su.grinev.myvpn.State.AWAITING_LOGIN_RESPONSE;
@@ -122,7 +124,6 @@ public class VpnClient {
     private void run() throws InterruptedException, NoSuchAlgorithmException, KeyManagementException {
         state = advanceStateIfTrueOrElse(hasError, WAITING, CONNECTING, state, disconnected);
         onStateChange.accept(state);
-        SSLSocket ssl = null;
 
         if (state == WAITING) {
             if (timeout++ == TIMEOUT) {
@@ -166,7 +167,7 @@ public class VpnClient {
                             Packet<?> packet = objectMapper.deserialize(serverInputStream, Packet.class);
                             ResponseDto<VpnIpResponseDto> responseDto = (ResponseDto<VpnIpResponseDto>) packet.getPayload();
 
-                            if (responseDto.getStatus() == Status.OK) {
+                            if (responseDto.getStatus() == OK) {
                                 DebugLog.log("Authorized");
                                 state = GET_IP;
                             } else {
@@ -183,6 +184,15 @@ public class VpnClient {
                         case LIVE -> {
                             Packet<?> packet = objectMapper.deserialize(serverInputStream, Packet.class);
                             RequestDto<VpnForwardPacketRequestDto> requestDto = (RequestDto<VpnForwardPacketRequestDto>) packet.getPayload();
+
+
+                            if (requestDto.getCommand() == PING) {
+                                packet = Packet.ofResponse(ResponseDto.ofRequest(requestDto, OK));
+                                synchronized (this) {
+                                    objectMapper.serialize(packet, serverOutputStream);
+                                }
+                                continue;
+                            }
 
                             if (requestDto.getCommand() == FORWARD_PACKET && requestDto.getData() instanceof VpnForwardPacketRequestDto vpnForwardPacketRequestDto) {
                                 if (vpnForwardPacketRequestDto.getPacket().length > MAX_MTU) {
@@ -233,7 +243,9 @@ public class VpnClient {
         Packet<RequestDto<?>> packet1 = Packet.ofRequest(requestDto);
 
         try {
-            objectMapper.serialize(packet1, serverOutputStream);
+            synchronized (this) {
+                objectMapper.serialize(packet1, serverOutputStream);
+            }
         } catch (RuntimeException | IOException ex) {
             handleError(ex);
             throw new RuntimeException(ex);
@@ -244,7 +256,7 @@ public class VpnClient {
         disconnect();
         state = SHUTDOWN;
         try {
-            Thread.sleep(100);
+            Thread.sleep(10);
             if (worker.isAlive()) {
                 worker.interrupt();
             }

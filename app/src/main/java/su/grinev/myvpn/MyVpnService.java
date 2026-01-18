@@ -1,5 +1,6 @@
 package su.grinev.myvpn;
 
+import android.annotation.SuppressLint;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -12,18 +13,17 @@ import android.util.Log;
 import androidx.core.app.NotificationCompat;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
-
+@SuppressLint("VpnServicePolicy")
 public class MyVpnService extends VpnService {
     private static final String CHANNEL_ID = "vpn";
     private static final int NOTIFICATION_ID = 1;
     public static final String ACTION_DISCONNECT = "su.grinev.myvpn.DISCONNECT";
-    public static final String ACTION_STATE      = "su.grinev.myvpn.STATE";
-    public static final String EXTRA_STATE       = "state";
-
+    public static final String ACTION_STATE = "su.grinev.myvpn.STATE";
+    public static final String EXTRA_STATE = "state";
     private VpnClientWrapper vpnClientWrapper;
     private String vpnServer = "178.253.22.137";
     private int port = 8443;
-    private String jwt = "eyJhbGciOiJSUzI1NiJ9.eyJqdGkiOiIxMjMiLCJzdWIiOiJWcG5DbGllbnQiLCJ0b2tlbl90eXBlIjoiQUNDRVNTIiwiY2xpZW50SWQiOjEyMywiaWF0IjoxNzY4Mjc4NTIxLCJleHAiOjE3NzA4NzA1MjF9.KB05K0CgEpeXcrjiI6-oWwsZMvTkmjFDw5Z6qJkBNbCIkdGs_7e4G2X3zPkpt3qyVCm_KtTIst6VSOJtIholrFTHbRI8qElPhsSA2hAg5XxkX5HVxITBvBMGIVDDgScULAe8UP6ZY1mRYydtOyFSGR6_0FIUoaC6Tzvg8yCX44ECD4tQjmpMW9r_dfcucN8CrffElsWmftA2OOVn0BMjDnKRQMowxXJCgExWPvJbD9N2z2Lo9tXswzy7wr4ZqsFWGXieKWFtda3wGMUwYs_kdD_uSrwdvO9oKv9MgVOGFv9-loaH_9t3kOO9cwdHNsSbgfLP_-Ya_qPW1J_RzTWaIA";
+    private String jwt = "eyJhbGciOiJSUzI1NiJ9.eyJqdGkiOiIxMTEiLCJzdWIiOiJWcG5DbGllbnQiLCJ0b2tlbl90eXBlIjoiQUNDRVNTIiwiY2xpZW50SWQiOjExMSwiaWF0IjoxNzY4MzI1OTc2LCJleHAiOjE3NzA5MTc5NzZ9.yTXfmzurInvDtrFn2oSFH9ciG5EzJ0uheimkuTp7Ffi3K8EKcVVPHmUy2jQcHex_MqQsituFsb7UQoOC7PVbfTAhFvsFXHj5URIa7J9JxsP7PE_1Q7M4cu_7nGW-VnyUKtNWN2adGMlDui2_jUsN9vSeIfR-lnu8rgz338Byy2jkFtWIjPrenwkcCY_xWuYu-AX2KDKCmK5KZo_qF82eb2Jcxj4yV6wgFBPtgUZhaFZIDTRZgLb6T9qRY-JWancydGmjHZqturpVj-lkynEonlS1jJ9kOysCQtnIgBzc4IONMyntqPRF3GKvoxzmszykbIlL-fYvjxF8oVqSqe94OQ";
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {

@@ -5,7 +5,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.net.VpnService;
-import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
 
@@ -18,7 +17,6 @@ public class MainActivity extends AppCompatActivity {
 
     private ActivityMainBinding binding;
     private State currentState = State.DISCONNECTED;
-
     private final BroadcastReceiver vpnReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -97,11 +95,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void startVpn() {
         Intent i = new Intent(this, MyVpnService.class);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(i);
-        } else {
-            startService(i);
-        }
+        startForegroundService(i);
         DebugLog.log("VPN start");
     }
 
@@ -121,24 +115,14 @@ public class MainActivity extends AppCompatActivity {
                 break;
         }
 
-        String statusText;
-        switch (state) {
-            case CONNECTED:
-                statusText = "Status: CONNECTED";
-                break;
-            case CONNECTING:
-                statusText = "Status: CONNECTING…";
-                break;
-            case DISCONNECTED:
-                statusText = "Status: DISCONNECTED";
-                break;
-            case ERROR:
-                statusText = "Status: ERROR";
-                break;
-            default:
-                statusText = "Status: UNKNOWN";
-                break;
-        }
+        String statusText = switch (state) {
+            case CONNECTED -> "Status: CONNECTED";
+            case CONNECTING -> "Status: CONNECTING…";
+            case DISCONNECTED -> "Status: DISCONNECTED";
+            case ERROR -> "Status: ERROR";
+            case WAITING -> "Status: WAITING FOR RECONNECT";
+            default -> "Status: UNKNOWN";
+        };
         binding.statusText.setText(statusText);
     }
 
