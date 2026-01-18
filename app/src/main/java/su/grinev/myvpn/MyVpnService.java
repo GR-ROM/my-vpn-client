@@ -243,4 +243,30 @@ public class MyVpnService extends VpnService {
         }
         super.onDestroy();
     }
+
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        DebugLog.log("App swiped away, stopping VPN service");
+        wasConnectedBeforeSleep = false;
+
+        if (vpnClientWrapper != null) {
+            vpnClientWrapper.stop();
+            vpnClientWrapper = null;
+        }
+
+        try {
+            unregisterReceiver(screenReceiver);
+        } catch (IllegalArgumentException e) {
+            // Receiver was not registered
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            stopForeground(STOP_FOREGROUND_REMOVE);
+        } else {
+            stopForeground(true);
+        }
+
+        stopSelf();
+        super.onTaskRemoved(rootIntent);
+    }
 }

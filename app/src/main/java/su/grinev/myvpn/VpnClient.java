@@ -185,7 +185,6 @@ public class VpnClient {
                             Packet<?> packet = objectMapper.deserialize(serverInputStream, Packet.class);
                             RequestDto<VpnForwardPacketRequestDto> requestDto = (RequestDto<VpnForwardPacketRequestDto>) packet.getPayload();
 
-
                             if (requestDto.getCommand() == PING) {
                                 packet = Packet.ofResponse(ResponseDto.ofRequest(requestDto, OK));
                                 synchronized (this) {
