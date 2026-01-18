@@ -5,7 +5,10 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.net.VpnService;
 import android.os.Build;
 import android.util.Log;
@@ -24,15 +27,34 @@ public class MyVpnService extends VpnService {
     private String vpnServer = "178.253.22.137";
     private int port = 8443;
     private String jwt = "eyJhbGciOiJSUzI1NiJ9.eyJqdGkiOiIxMTEiLCJzdWIiOiJWcG5DbGllbnQiLCJ0b2tlbl90eXBlIjoiQUNDRVNTIiwiY2xpZW50SWQiOjExMSwiaWF0IjoxNzY4MzI1OTc2LCJleHAiOjE3NzA5MTc5NzZ9.yTXfmzurInvDtrFn2oSFH9ciG5EzJ0uheimkuTp7Ffi3K8EKcVVPHmUy2jQcHex_MqQsituFsb7UQoOC7PVbfTAhFvsFXHj5URIa7J9JxsP7PE_1Q7M4cu_7nGW-VnyUKtNWN2adGMlDui2_jUsN9vSeIfR-lnu8rgz338Byy2jkFtWIjPrenwkcCY_xWuYu-AX2KDKCmK5KZo_qF82eb2Jcxj4yV6wgFBPtgUZhaFZIDTRZgLb6T9qRY-JWancydGmjHZqturpVj-lkynEonlS1jJ9kOysCQtnIgBzc4IONMyntqPRF3GKvoxzmszykbIlL-fYvjxF8oVqSqe94OQ";
+    private boolean wasConnectedBeforeSleep = false;
+    private boolean isSleeping = false;
+
+    private final BroadcastReceiver screenReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) {
+                handleScreenOff();
+            } else if (Intent.ACTION_SCREEN_ON.equals(intent.getAction())) {
+                handleScreenOn();
+            }
+        }
+    };
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         startForeground(NOTIFICATION_ID, buildNotification("Starting…"));
 
         if (intent != null && ACTION_DISCONNECT.equals(intent.getAction())) {
+            wasConnectedBeforeSleep = false;
             stopVpn();
             return START_NOT_STICKY;
         }
+
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(Intent.ACTION_SCREEN_OFF);
+        filter.addAction(Intent.ACTION_SCREEN_ON);
+        registerReceiver(screenReceiver, filter);
 
         DebugLog.log("VPN service started");
 
@@ -74,7 +96,13 @@ public class MyVpnService extends VpnService {
 
             case DISCONNECTED:
                 updateNotification("Disconnected");
-                stopSelf();
+                if (!isSleeping) {
+                    stopSelf();
+                }
+                break;
+
+            case SLEEPING:
+                updateNotification("Sleeping…");
                 break;
 
             case ERROR:
@@ -157,5 +185,62 @@ public class MyVpnService extends VpnService {
             NotificationManager nm = getSystemService(NotificationManager.class);
             if (nm != null) nm.createNotificationChannel(ch);
         }
+    }
+
+    private void handleScreenOff() {
+        DebugLog.log("Screen off detected");
+        if (vpnClientWrapper != null) {
+            wasConnectedBeforeSleep = true;
+            isSleeping = true;
+            sendState(State.SLEEPING);
+            updateNotification("Sleeping…");
+
+            new Thread(() -> {
+                if (vpnClientWrapper != null) {
+                    vpnClientWrapper.stop();
+                    vpnClientWrapper = null;
+                }
+            }).start();
+        }
+    }
+
+    private void handleScreenOn() {
+        DebugLog.log("Screen on detected");
+        if (wasConnectedBeforeSleep) {
+            wasConnectedBeforeSleep = false;
+            isSleeping = false;
+
+            new Thread(() -> {
+                try {
+                    sendState(State.CONNECTING);
+                    updateNotification("Reconnecting…");
+                    TunAndroid tunAndroid = new TunAndroid(this);
+
+                    vpnClientWrapper = new VpnClientWrapper(
+                            tunAndroid,
+                            vpnServer,
+                            port,
+                            jwt,
+                            true,
+                            this::onChangeState
+                    );
+                } catch (Exception e) {
+                    DebugLog.log("VPN reconnect error: " + Log.getStackTraceString(e));
+                    onChangeState(State.ERROR);
+                }
+            }).start();
+        } else {
+            isSleeping = false;
+        }
+    }
+
+    @Override
+    public void onDestroy() {
+        try {
+            unregisterReceiver(screenReceiver);
+        } catch (IllegalArgumentException e) {
+            // Receiver was not registered
+        }
+        super.onDestroy();
     }
 }

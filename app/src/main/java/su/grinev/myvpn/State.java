@@ -12,5 +12,6 @@ public enum State {
     IP_ACQUIRED,
     LIVE,
     WAITING,
-    ERROR
+    ERROR,
+    SLEEPING
 }

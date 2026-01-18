@@ -109,6 +109,9 @@ public class MainActivity extends AppCompatActivity {
             case CONNECTING:
                 binding.connectButton.setText("Connecting…");
                 break;
+            case SLEEPING:
+                binding.connectButton.setText("Sleeping…");
+                break;
             case DISCONNECTED:
             case ERROR:
                 binding.connectButton.setText("Connect");
@@ -121,6 +124,7 @@ public class MainActivity extends AppCompatActivity {
             case DISCONNECTED -> "Status: DISCONNECTED";
             case ERROR -> "Status: ERROR";
             case WAITING -> "Status: WAITING FOR RECONNECT";
+            case SLEEPING -> "Status: SLEEPING";
             default -> "Status: UNKNOWN";
         };
         binding.statusText.setText(statusText);
