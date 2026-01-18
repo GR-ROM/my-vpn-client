@@ -57,7 +57,12 @@ public class MyVpnService extends VpnService {
         registerReceiver(screenReceiver, filter);
 
         DebugLog.log("VPN service started");
+        startVpnConnection();
 
+        return START_STICKY;
+    }
+
+    private void startVpnConnection() {
         new Thread(() -> {
             try {
                 sendState(State.CONNECTING);
@@ -75,11 +80,8 @@ public class MyVpnService extends VpnService {
             } catch (Exception e) {
                 DebugLog.log("VPN error: " + Log.getStackTraceString(e));
                 onChangeState(State.ERROR);
-                stopSelf();
             }
-        }).start();
-
-        return START_STICKY;
+        }, "VpnConnectionThread").start();
     }
 
     private void onChangeState(State state) {
@@ -209,26 +211,8 @@ public class MyVpnService extends VpnService {
         if (wasConnectedBeforeSleep) {
             wasConnectedBeforeSleep = false;
             isSleeping = false;
-
-            new Thread(() -> {
-                try {
-                    sendState(State.CONNECTING);
-                    updateNotification("Reconnecting…");
-                    TunAndroid tunAndroid = new TunAndroid(this);
-
-                    vpnClientWrapper = new VpnClientWrapper(
-                            tunAndroid,
-                            vpnServer,
-                            port,
-                            jwt,
-                            true,
-                            this::onChangeState
-                    );
-                } catch (Exception e) {
-                    DebugLog.log("VPN reconnect error: " + Log.getStackTraceString(e));
-                    onChangeState(State.ERROR);
-                }
-            }).start();
+            updateNotification("Reconnecting…");
+            startVpnConnection();
         } else {
             isSleeping = false;
         }

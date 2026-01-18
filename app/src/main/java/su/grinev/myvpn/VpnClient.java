@@ -52,9 +52,9 @@ public class VpnClient {
     private DataOutputStream serverOutputStream;
     private DataInputStream serverInputStream;
     private final String jwt;
-    public State state;
+    public volatile State state;
     private int timeout = 0;
-    private boolean hasError = false;
+    private volatile boolean hasError = false;
     private final Set<State> disconnected = Set.of(DISCONNECTED, WAITING);
     private final BsonMapper objectMapper;
     private final SSLContext sslContext;
@@ -169,17 +169,23 @@ public class VpnClient {
 
                             if (responseDto.getStatus() == OK) {
                                 DebugLog.log("Authorized");
-                                state = GET_IP;
+                                VpnIpResponseDto ipResponse = responseDto.getData();
+                                if (ipResponse == null) {
+                                    DebugLog.log("No IP data in response");
+                                    state = DISCONNECTED;
+                                    hasError = true;
+                                    break;
+                                }
+                                assignedIp = intToIpv4(ipResponse.getIpAddress());
+                                assignedIpBytes = ipv4ToIntBytes(assignedIp);
+                                state = LIVE;
+                                DebugLog.log("Virtual IP: " + assignedIp);
+                                onIpAssigned.accept(assignedIp);
                             } else {
-                                DebugLog.log(responseDto.getStatus().name());
-                                state = SHUTDOWN;
+                                DebugLog.log("Auth failed: " + responseDto.getStatus().name());
+                                state = DISCONNECTED;
                                 hasError = true;
                             }
-                            assignedIp = intToIpv4(responseDto.getData().getIpAddress());
-                            assignedIpBytes = ipv4ToIntBytes(assignedIp);
-                            state = LIVE;
-                            DebugLog.log("Virtual IP: " + assignedIp);
-                            onIpAssigned.accept(assignedIp);
                         }
                         case LIVE -> {
                             Packet<?> packet = objectMapper.deserialize(serverInputStream, Packet.class);
@@ -272,13 +278,26 @@ public class VpnClient {
             DebugLog.log("Disconnected from server");
         }
 
-        try {
-            serverOutputStream.close();
-        } catch (IOException ex) {
-            ex.printStackTrace();
-        } finally {
-            serverOutputStream = null;
-            serverInputStream = null;
+        synchronized (this) {
+            try {
+                if (serverOutputStream != null) {
+                    serverOutputStream.close();
+                }
+            } catch (IOException ex) {
+                DebugLog.log("Error closing output stream: " + ex.getMessage());
+            } finally {
+                serverOutputStream = null;
+            }
+
+            try {
+                if (serverInputStream != null) {
+                    serverInputStream.close();
+                }
+            } catch (IOException ex) {
+                DebugLog.log("Error closing input stream: " + ex.getMessage());
+            } finally {
+                serverInputStream = null;
+            }
         }
     }
 }

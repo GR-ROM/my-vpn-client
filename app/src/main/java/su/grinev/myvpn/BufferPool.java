@@ -17,24 +17,23 @@ public class BufferPool {
     }
 
     public byte[] getBuffer() {
-        if (available.isEmpty()) {
-            synchronized (this) {
+        synchronized (this) {
+            while (available.isEmpty()) {
                 try {
                     blocked.set(true);
-                    wait();
+                    wait(5000);
+                    if (available.isEmpty()) {
+                        throw new IllegalStateException("Timeout waiting for buffer");
+                    }
                 } catch (InterruptedException e) {
-                    throw new RuntimeException(e);
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException("Interrupted while waiting for buffer", e);
                 }
             }
-        } else {
-            byte[] buffer;
-            synchronized (this) {
-                buffer = available.remove(0);
-                occupied.add(buffer);
-            }
+            byte[] buffer = available.remove(0);
+            occupied.add(buffer);
             return buffer;
         }
-        throw new IllegalStateException("Unable to to allocate buffer");
     }
 
     public void release(byte[] buffer) {
