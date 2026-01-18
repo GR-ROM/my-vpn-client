@@ -14,7 +14,7 @@
             android:id="@+id/toolbar"
             android:layout_width="match_parent"
             android:layout_height="?attr/actionBarSize"
-            android:title="MyVPN"/>
+            android:title="@string/app_name"/>
     </com.google.android.material.appbar.AppBarLayout>
 
     <!-- Content -->
@@ -30,7 +30,7 @@
             android:id="@+id/statusText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Status: DISCONNECTED"
+            android:text="@string/status_disconnected"
             android:textStyle="bold"
             android:textSize="16sp"/>
 
@@ -39,7 +39,7 @@
             android:id="@+id/connectButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="CONNECT"
+            android:text="@string/btn_connect"
             android:layout_marginTop="12dp"/>
 
         <!-- Logs -->
@@ -53,7 +53,7 @@
             android:textColor="#00FF00"
             android:textSize="12sp"
             android:padding="8dp"
-            android:text="logs...\n"
+            android:text="@string/log_placeholder"
             android:scrollbars="vertical"/>
     </LinearLayout>
 

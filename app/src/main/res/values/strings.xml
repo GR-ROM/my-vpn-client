@@ -1,7 +1,35 @@
 <resources>
-    <string name="app_name">MyVpn</string>
+    <string name="app_name">MyVPN</string>
     <string name="action_settings">Settings</string>
-    <!-- Strings used for fragments for navigation -->
+
+    <!-- Button labels -->
+    <string name="btn_connect">Connect</string>
+    <string name="btn_disconnect">Disconnect</string>
+    <string name="btn_connecting">Connecting…</string>
+    <string name="btn_sleeping">Sleeping…</string>
+
+    <!-- Status messages -->
+    <string name="status_connected">Status: CONNECTED</string>
+    <string name="status_connecting">Status: CONNECTING…</string>
+    <string name="status_disconnected">Status: DISCONNECTED</string>
+    <string name="status_error">Status: ERROR</string>
+    <string name="status_waiting">Status: WAITING FOR RECONNECT</string>
+    <string name="status_sleeping">Status: SLEEPING</string>
+    <string name="status_unknown">Status: UNKNOWN</string>
+
+    <!-- Notification messages -->
+    <string name="notif_starting">Starting…</string>
+    <string name="notif_connecting">Connecting…</string>
+    <string name="notif_connected">Connected</string>
+    <string name="notif_disconnected">Disconnected</string>
+    <string name="notif_sleeping">Sleeping…</string>
+    <string name="notif_reconnecting">Reconnecting…</string>
+    <string name="notif_error">Error</string>
+
+    <!-- Log placeholder -->
+    <string name="log_placeholder">Logs…</string>
+
+    <!-- Legacy strings for navigation (unused) -->
     <string name="first_fragment_label">First Fragment</string>
     <string name="second_fragment_label">Second Fragment</string>
     <string name="next">Next</string>

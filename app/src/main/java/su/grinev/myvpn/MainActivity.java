@@ -104,30 +104,30 @@ public class MainActivity extends AppCompatActivity {
 
         switch (state) {
             case CONNECTED:
-                binding.connectButton.setText("Disconnect");
+                binding.connectButton.setText(R.string.btn_disconnect);
                 break;
             case CONNECTING:
-                binding.connectButton.setText("Connecting…");
+                binding.connectButton.setText(R.string.btn_connecting);
                 break;
             case SLEEPING:
-                binding.connectButton.setText("Sleeping…");
+                binding.connectButton.setText(R.string.btn_sleeping);
                 break;
             case DISCONNECTED:
             case ERROR:
-                binding.connectButton.setText("Connect");
+                binding.connectButton.setText(R.string.btn_connect);
                 break;
         }
 
-        String statusText = switch (state) {
-            case CONNECTED -> "Status: CONNECTED";
-            case CONNECTING -> "Status: CONNECTING…";
-            case DISCONNECTED -> "Status: DISCONNECTED";
-            case ERROR -> "Status: ERROR";
-            case WAITING -> "Status: WAITING FOR RECONNECT";
-            case SLEEPING -> "Status: SLEEPING";
-            default -> "Status: UNKNOWN";
+        int statusResId = switch (state) {
+            case CONNECTED -> R.string.status_connected;
+            case CONNECTING -> R.string.status_connecting;
+            case DISCONNECTED -> R.string.status_disconnected;
+            case ERROR -> R.string.status_error;
+            case WAITING -> R.string.status_waiting;
+            case SLEEPING -> R.string.status_sleeping;
+            default -> R.string.status_unknown;
         };
-        binding.statusText.setText(statusText);
+        binding.statusText.setText(statusResId);
     }
 
 }

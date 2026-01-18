@@ -43,7 +43,7 @@ public class MyVpnService extends VpnService {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        startForeground(NOTIFICATION_ID, buildNotification("Starting…"));
+        startForeground(NOTIFICATION_ID, buildNotification(R.string.notif_starting));
 
         if (intent != null && ACTION_DISCONNECT.equals(intent.getAction())) {
             wasConnectedBeforeSleep = false;
@@ -89,26 +89,26 @@ public class MyVpnService extends VpnService {
 
         switch (state) {
             case CONNECTING:
-                updateNotification("Connecting…");
+                updateNotification(R.string.notif_connecting);
                 break;
 
             case CONNECTED:
-                updateNotification("Connected");
+                updateNotification(R.string.notif_connected);
                 break;
 
             case DISCONNECTED:
-                updateNotification("Disconnected");
+                updateNotification(R.string.notif_disconnected);
                 if (!isSleeping) {
                     stopSelf();
                 }
                 break;
 
             case SLEEPING:
-                updateNotification("Sleeping…");
+                updateNotification(R.string.notif_sleeping);
                 break;
 
             case ERROR:
-                updateNotification("Error");
+                updateNotification(R.string.notif_error);
                 stopSelf();
                 break;
         }
@@ -139,14 +139,14 @@ public class MyVpnService extends VpnService {
         }).start();
     }
 
-    private void updateNotification(String text) {
+    private void updateNotification(int textResId) {
         NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         if (nm != null) {
-            nm.notify(NOTIFICATION_ID, buildNotification(text));
+            nm.notify(NOTIFICATION_ID, buildNotification(textResId));
         }
     }
 
-    private Notification buildNotification(String text) {
+    private Notification buildNotification(int textResId) {
         createNotificationChannel();
 
         Intent disconnect = new Intent(this, MyVpnService.class);
@@ -168,12 +168,12 @@ public class MyVpnService extends VpnService {
 
         return new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_vpn_key)
-                .setContentTitle("MyVPN")
-                .setContentText(text)
+                .setContentTitle(getString(R.string.app_name))
+                .setContentText(getString(textResId))
                 .setContentIntent(uiPi)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
-                .addAction(R.drawable.ic_disconnect, "Disconnect", disconnectPi)
+                .addAction(R.drawable.ic_disconnect, getString(R.string.btn_disconnect), disconnectPi)
                 .build();
     }
 
@@ -195,7 +195,7 @@ public class MyVpnService extends VpnService {
             wasConnectedBeforeSleep = true;
             isSleeping = true;
             sendState(State.SLEEPING);
-            updateNotification("Sleeping…");
+            updateNotification(R.string.notif_sleeping);
 
             new Thread(() -> {
                 if (vpnClientWrapper != null) {
@@ -211,7 +211,7 @@ public class MyVpnService extends VpnService {
         if (wasConnectedBeforeSleep) {
             wasConnectedBeforeSleep = false;
             isSleeping = false;
-            updateNotification("Reconnecting…");
+            updateNotification(R.string.notif_reconnecting);
             startVpnConnection();
         } else {
             isSleeping = false;
