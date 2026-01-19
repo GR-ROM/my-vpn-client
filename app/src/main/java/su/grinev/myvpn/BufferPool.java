@@ -4,7 +4,6 @@ import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class BufferPool {
-
     private final List<byte[]> available = new LinkedList<>();
     private final Set<byte[]> occupied = new HashSet<>();
     private final AtomicBoolean blocked = new AtomicBoolean(false);

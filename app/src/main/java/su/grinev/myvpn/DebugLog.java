@@ -19,6 +19,7 @@ public final class DebugLog {
     private static final SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
 
     private static final String SPLASH = """
+                
                 __  ___     _    ______  _   __
                /  |/  /_  _| |  / / __ \\/ | / /
               / /|_/ / / / / | / / /_/ /  |/ /\s

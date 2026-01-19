@@ -8,7 +8,7 @@ android {
 
     defaultConfig {
         applicationId = "su.grinev.myvpn"
-        minSdk = 34
+        minSdk = 33
         targetSdk = 34
 
         versionCode = 1
