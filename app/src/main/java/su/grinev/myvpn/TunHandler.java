@@ -48,11 +48,6 @@ public abstract class TunHandler {
 
     protected void stop() {
         stop = true;
-        try {
-            Thread.sleep(10);
-        } catch (InterruptedException e) {
-            throw new RuntimeException(e);
-        }
         if (readerThread.isAlive()) {
             readerThread.interrupt();
         }

@@ -4,7 +4,7 @@ plugins {
 
 android {
     namespace = "su.grinev.myvpn"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "su.grinev.myvpn"
@@ -12,7 +12,7 @@ android {
         targetSdk = 34
 
         versionCode = 1
-        versionName = "1.0"
+        versionName = "0.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -32,6 +32,7 @@ android {
     }
     buildFeatures {
         viewBinding = true
+        buildConfig = true
     }
 }
 

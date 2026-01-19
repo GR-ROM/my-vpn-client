@@ -9,8 +9,11 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.NetworkRequest;
 import android.net.VpnService;
-import android.os.Build;
 import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
@@ -24,11 +27,33 @@ public class MyVpnService extends VpnService {
     public static final String ACTION_STATE = "su.grinev.myvpn.STATE";
     public static final String EXTRA_STATE = "state";
     private VpnClientWrapper vpnClientWrapper;
-    private String vpnServer = "178.253.22.137";
-    private int port = 8443;
-    private String jwt = "eyJhbGciOiJSUzI1NiJ9.eyJqdGkiOiI4OSIsInN1YiI6IlZSIiwidG9rZW5fdHlwZSI6IkFDQ0VTUyIsImNsaWVudElkIjo4OSwiaWF0IjoxNzY4NzU1MDIwLCJleHAiOjE3NzEzNDcwMjB9.lt77sO0v7XUxsuDyW_YqKnnPOvyzJQq3OzP31-GCTHhRyOewA2gXjd5-ln0C0NoV4dAMDhF2iDBCz9A57HCgOR5juOHqrXrNIwO5CYccNb9TOw9jnfvyUNhdgdsBwaRl4rXfNxRRtVTbYKGekm1nq-_LNnpSE827p9mgNYF3x1d06Bli5-4vF5UcRNuLcsWjTYFSXVUFZS_TLtSF90rwGwbFiVP9SU30Zy6Gudrr862xaSVCbv-PeT2vo0PD4uK2AnHq-GFGRMCHSf2jLN8vUFH9FE-BgYfvqZg8CAmruSQDt3NxMlyqQeFouEZPWjAguCRqYlAq2K_FyRjIH2cRZg";
+    private String vpnServer;
+    private int port;
+    private String jwt;
     private boolean wasConnectedBeforeSleep = false;
     private boolean isSleeping = false;
+    private ConnectivityManager connectivityManager;
+    private Network currentNetwork;
+
+    private final ConnectivityManager.NetworkCallback networkCallback = new ConnectivityManager.NetworkCallback() {
+        @Override
+        public void onAvailable(Network network) {
+            DebugLog.log("Network available: " + network);
+            if (currentNetwork != null && !currentNetwork.equals(network)) {
+                DebugLog.log("Network changed, reconnecting");
+                handleNetworkChange();
+            }
+            currentNetwork = network;
+        }
+
+        @Override
+        public void onLost(Network network) {
+            DebugLog.log("Network lost: " + network);
+            if (network.equals(currentNetwork)) {
+                currentNetwork = null;
+            }
+        }
+    };
 
     private final BroadcastReceiver screenReceiver = new BroadcastReceiver() {
         @Override
@@ -56,7 +81,20 @@ public class MyVpnService extends VpnService {
         filter.addAction(Intent.ACTION_SCREEN_ON);
         registerReceiver(screenReceiver, filter);
 
+        // Register network change listener
+        connectivityManager = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        NetworkRequest networkRequest = new NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build();
+        connectivityManager.registerNetworkCallback(networkRequest, networkCallback);
+
+        // Load settings
+        vpnServer = SettingsActivity.getServerIp(this);
+        port = SettingsActivity.getServerPort(this);
+        jwt = SettingsActivity.getJwt(this);
+
         DebugLog.log("VPN service started");
+        DebugLog.log("Server: " + vpnServer + ":" + port);
         startVpnConnection();
 
         return START_STICKY;
@@ -172,14 +210,27 @@ public class MyVpnService extends VpnService {
     }
 
     private void createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel ch = new NotificationChannel(
-                    CHANNEL_ID,
-                    "VPN",
-                    NotificationManager.IMPORTANCE_LOW
-            );
-            NotificationManager nm = getSystemService(NotificationManager.class);
-            if (nm != null) nm.createNotificationChannel(ch);
+        NotificationChannel ch = new NotificationChannel(
+                CHANNEL_ID,
+                "VPN",
+                NotificationManager.IMPORTANCE_LOW
+        );
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        if (nm != null) nm.createNotificationChannel(ch);
+    }
+
+    private void handleNetworkChange() {
+        if (vpnClientWrapper != null) {
+            updateNotification(R.string.notif_reconnecting);
+            sendState(State.CONNECTING);
+
+            new Thread(() -> {
+                if (vpnClientWrapper != null) {
+                    vpnClientWrapper.stop();
+                    vpnClientWrapper = null;
+                }
+                startVpnConnection();
+            }).start();
         }
     }
 
@@ -226,6 +277,9 @@ public class MyVpnService extends VpnService {
         } catch (IllegalArgumentException e) {
             // Receiver was not registered
         }
+        if (connectivityManager != null) {
+            connectivityManager.unregisterNetworkCallback(networkCallback);
+        }
         super.onDestroy();
     }
 
@@ -245,11 +299,11 @@ public class MyVpnService extends VpnService {
             // Receiver was not registered
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            stopForeground(STOP_FOREGROUND_REMOVE);
-        } else {
-            stopForeground(true);
+        if (connectivityManager != null) {
+            connectivityManager.unregisterNetworkCallback(networkCallback);
         }
+
+        stopForeground(STOP_FOREGROUND_REMOVE);
 
         stopSelf();
         super.onTaskRemoved(rootIntent);

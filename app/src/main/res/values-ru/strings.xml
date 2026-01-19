@@ -29,4 +29,21 @@
 
     <!-- Log placeholder -->
     <string name="log_placeholder">Логи…</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Настройки</string>
+    <string name="settings_server_ip">IP сервера</string>
+    <string name="settings_server_port">Порт сервера</string>
+    <string name="settings_jwt">JWT токен</string>
+    <string name="settings_save">Сохранить</string>
+    <string name="settings_saved">Настройки сохранены</string>
+    <string name="settings_error_required">Обязательное поле</string>
+    <string name="settings_error_port">Порт должен быть от 1 до 65535</string>
+
+    <!-- Validation messages -->
+    <string name="validation_ip_empty">IP сервера не настроен</string>
+    <string name="validation_ip_invalid">Неверный формат IP адреса</string>
+    <string name="validation_port_invalid">Неверный номер порта</string>
+    <string name="validation_jwt_empty">JWT токен не настроен</string>
+    <string name="validation_jwt_invalid">Неверный формат JWT токена</string>
 </resources>

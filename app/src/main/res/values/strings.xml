@@ -29,6 +29,23 @@
     <!-- Log placeholder -->
     <string name="log_placeholder">Logs…</string>
 
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_server_ip">Server IP</string>
+    <string name="settings_server_port">Server Port</string>
+    <string name="settings_jwt">JWT Token</string>
+    <string name="settings_save">Save</string>
+    <string name="settings_saved">Settings saved</string>
+    <string name="settings_error_required">This field is required</string>
+    <string name="settings_error_port">Port must be 1-65535</string>
+
+    <!-- Validation messages -->
+    <string name="validation_ip_empty">Server IP is not configured</string>
+    <string name="validation_ip_invalid">Invalid IP address format</string>
+    <string name="validation_port_invalid">Invalid port number</string>
+    <string name="validation_jwt_empty">JWT token is not configured</string>
+    <string name="validation_jwt_invalid">Invalid JWT token format</string>
+
     <!-- Legacy strings for navigation (unused) -->
     <string name="first_fragment_label">First Fragment</string>
     <string name="second_fragment_label">Second Fragment</string>

@@ -25,6 +25,15 @@
         android:orientation="vertical"
         android:padding="16dp">
 
+        <!-- Caption -->
+        <TextView
+            android:id="@+id/captionText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="14sp"
+            android:textColor="?android:attr/textColorSecondary"
+            android:layout_marginBottom="8dp"/>
+
         <!-- Status -->
         <TextView
             android:id="@+id/statusText"
@@ -34,27 +43,51 @@
             android:textStyle="bold"
             android:textSize="16sp"/>
 
-        <!-- Connect / Disconnect -->
-        <Button
-            android:id="@+id/connectButton"
+        <!-- Buttons -->
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/btn_connect"
-            android:layout_marginTop="12dp"/>
+            android:orientation="horizontal"
+            android:layout_marginTop="12dp">
+
+            <Button
+                android:id="@+id/connectButton"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:text="@string/btn_connect"/>
+
+            <ImageButton
+                android:id="@+id/settingsButton"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginStart="8dp"
+                android:src="@drawable/ic_settings"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/action_settings"/>
+        </LinearLayout>
 
         <!-- Logs -->
-        <TextView
-            android:id="@+id/logView"
+        <ScrollView
+            android:id="@+id/logScrollView"
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_marginTop="16dp"
             android:layout_weight="1"
             android:background="#111111"
-            android:textColor="#00FF00"
-            android:textSize="12sp"
-            android:padding="8dp"
-            android:text="@string/log_placeholder"
-            android:scrollbars="vertical"/>
+            android:fillViewport="true">
+
+            <TextView
+                android:id="@+id/logView"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="#00FF00"
+                android:textSize="11sp"
+                android:fontFamily="monospace"
+                android:typeface="monospace"
+                android:padding="8dp"
+                android:text="@string/log_placeholder"/>
+        </ScrollView>
     </LinearLayout>
 
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

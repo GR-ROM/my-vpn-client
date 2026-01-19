@@ -88,7 +88,8 @@ public class TunAndroid implements Tun {
                 Thread.sleep(1000);
                 DebugLog.log("tun is not ready, waiting...");
             } catch (InterruptedException e) {
-                throw new RuntimeException(e);
+                Thread.currentThread().interrupt();
+                throw new IOException("Thread interrupted while waiting for TUN");
             }
         }
     }
