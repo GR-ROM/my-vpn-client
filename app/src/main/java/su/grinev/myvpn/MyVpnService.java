@@ -17,15 +17,16 @@ import android.net.VpnService;
 import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
-import androidx.localbroadcastmanager.content.LocalBroadcastManager;
+
+import java.util.function.Consumer;
 
 @SuppressLint("VpnServicePolicy")
 public class MyVpnService extends VpnService {
     private static final String CHANNEL_ID = "vpn";
     private static final int NOTIFICATION_ID = 1;
     public static final String ACTION_DISCONNECT = "su.grinev.myvpn.DISCONNECT";
-    public static final String ACTION_STATE = "su.grinev.myvpn.STATE";
-    public static final String EXTRA_STATE = "state";
+    private static volatile State currentState = State.DISCONNECTED;
+    private static volatile Consumer<State> stateListener;
     private VpnClientWrapper vpnClientWrapper;
     private String vpnServer;
     private int port;
@@ -153,9 +154,24 @@ public class MyVpnService extends VpnService {
     }
 
     private void sendState(State state) {
-        Intent i = new Intent(ACTION_STATE);
-        i.putExtra(EXTRA_STATE, state.name());
-        LocalBroadcastManager.getInstance(this).sendBroadcast(i);
+        currentState = state;
+        Consumer<State> listener = stateListener;
+        if (listener != null) {
+            listener.accept(state);
+        }
+    }
+
+    public static void observeState(Consumer<State> listener) {
+        stateListener = listener;
+        listener.accept(currentState);
+    }
+
+    public static void unobserveState() {
+        stateListener = null;
+    }
+
+    public static State getCurrentState() {
+        return currentState;
     }
 
     private void stopVpn() {

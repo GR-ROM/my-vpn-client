@@ -1,16 +1,12 @@
 package su.grinev.myvpn;
 
-import android.content.BroadcastReceiver;
-import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.net.VpnService;
 import android.os.Bundle;
 import android.view.View;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
 import java.util.regex.Pattern;
 
@@ -20,18 +16,6 @@ public class MainActivity extends AppCompatActivity {
 
     private ActivityMainBinding binding;
     private State currentState = State.DISCONNECTED;
-    private final BroadcastReceiver vpnReceiver = new BroadcastReceiver() {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            if (MyVpnService.ACTION_STATE.equals(intent.getAction())) {
-                String stateName = intent.getStringExtra(MyVpnService.EXTRA_STATE);
-                if (stateName != null) {
-                    State state = State.valueOf(stateName);
-                    runOnUiThread(() -> updateUI(state));
-                }
-            }
-        }
-    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -56,15 +40,18 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onStart() {
         super.onStart();
-        LocalBroadcastManager.getInstance(this).registerReceiver(
-                vpnReceiver,
-                new IntentFilter(MyVpnService.ACTION_STATE)
-        );
+        MyVpnService.observeState(state -> runOnUiThread(() -> updateUI(state)));
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        updateUI(MyVpnService.getCurrentState());
     }
 
     @Override
     protected void onStop() {
-        LocalBroadcastManager.getInstance(this).unregisterReceiver(vpnReceiver);
+        MyVpnService.unobserveState();
         super.onStop();
     }
 
