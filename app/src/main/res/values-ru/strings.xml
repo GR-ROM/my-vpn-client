@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MyVPN</string>
+    <string name="action_settings">Настройки</string>
+
+    <!-- Button labels -->
+    <string name="btn_connect">Подключить</string>
+    <string name="btn_disconnect">Отключить</string>
+    <string name="btn_connecting">Подключение…</string>
+    <string name="btn_sleeping">Сон…</string>
+
+    <!-- Status messages -->
+    <string name="status_connected">Статус: ПОДКЛЮЧЕНО</string>
+    <string name="status_connecting">Статус: ПОДКЛЮЧЕНИЕ…</string>
+    <string name="status_disconnected">Статус: ОТКЛЮЧЕНО</string>
+    <string name="status_error">Статус: ОШИБКА</string>
+    <string name="status_waiting">Статус: ОЖИДАНИЕ ПЕРЕПОДКЛЮЧЕНИЯ</string>
+    <string name="status_sleeping">Статус: СОН</string>
+    <string name="status_unknown">Статус: НЕИЗВЕСТНО</string>
+
+    <!-- Notification messages -->
+    <string name="notif_starting">Запуск…</string>
+    <string name="notif_connecting">Подключение…</string>
+    <string name="notif_connected">Подключено</string>
+    <string name="notif_disconnected">Отключено</string>
+    <string name="notif_sleeping">Сон…</string>
+    <string name="notif_reconnecting">Переподключение…</string>
+    <string name="notif_error">Ошибка</string>
+
+    <!-- Log placeholder -->
+    <string name="log_placeholder">Логи…</string>
+</resources>

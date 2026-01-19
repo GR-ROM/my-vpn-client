@@ -51,6 +51,7 @@ public class VpnClient {
     private final int serverPort;
     private DataOutputStream serverOutputStream;
     private DataInputStream serverInputStream;
+    private SSLSocket socket;
     private final String jwt;
     public volatile State state;
     private int timeout = 0;
@@ -142,7 +143,6 @@ public class VpnClient {
             try {
                 SSLSocketFactory factory = sslContext.getSocketFactory();
                 DebugLog.log("Connecting to " + serverAddress + ":" + serverPort);
-                SSLSocket socket;
                 socket = (SSLSocket) factory.createSocket();
                 setupSocket(socket);
 
@@ -268,6 +268,10 @@ public class VpnClient {
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    public boolean isSocketConnected() {
+        return socket != null && socket.isConnected() && !socket.isClosed();
     }
 
     public void disconnect() {

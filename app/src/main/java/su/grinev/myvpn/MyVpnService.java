@@ -26,7 +26,7 @@ public class MyVpnService extends VpnService {
     private VpnClientWrapper vpnClientWrapper;
     private String vpnServer = "178.253.22.137";
     private int port = 8443;
-    private String jwt = "eyJhbGciOiJSUzI1NiJ9.eyJqdGkiOiIxMTEiLCJzdWIiOiJWcG5DbGllbnQiLCJ0b2tlbl90eXBlIjoiQUNDRVNTIiwiY2xpZW50SWQiOjExMSwiaWF0IjoxNzY4MzI1OTc2LCJleHAiOjE3NzA5MTc5NzZ9.yTXfmzurInvDtrFn2oSFH9ciG5EzJ0uheimkuTp7Ffi3K8EKcVVPHmUy2jQcHex_MqQsituFsb7UQoOC7PVbfTAhFvsFXHj5URIa7J9JxsP7PE_1Q7M4cu_7nGW-VnyUKtNWN2adGMlDui2_jUsN9vSeIfR-lnu8rgz338Byy2jkFtWIjPrenwkcCY_xWuYu-AX2KDKCmK5KZo_qF82eb2Jcxj4yV6wgFBPtgUZhaFZIDTRZgLb6T9qRY-JWancydGmjHZqturpVj-lkynEonlS1jJ9kOysCQtnIgBzc4IONMyntqPRF3GKvoxzmszykbIlL-fYvjxF8oVqSqe94OQ";
+    private String jwt = "eyJhbGciOiJSUzI1NiJ9.eyJqdGkiOiI4OSIsInN1YiI6IlZSIiwidG9rZW5fdHlwZSI6IkFDQ0VTUyIsImNsaWVudElkIjo4OSwiaWF0IjoxNzY4NzU1MDIwLCJleHAiOjE3NzEzNDcwMjB9.lt77sO0v7XUxsuDyW_YqKnnPOvyzJQq3OzP31-GCTHhRyOewA2gXjd5-ln0C0NoV4dAMDhF2iDBCz9A57HCgOR5juOHqrXrNIwO5CYccNb9TOw9jnfvyUNhdgdsBwaRl4rXfNxRRtVTbYKGekm1nq-_LNnpSE827p9mgNYF3x1d06Bli5-4vF5UcRNuLcsWjTYFSXVUFZS_TLtSF90rwGwbFiVP9SU30Zy6Gudrr862xaSVCbv-PeT2vo0PD4uK2AnHq-GFGRMCHSf2jLN8vUFH9FE-BgYfvqZg8CAmruSQDt3NxMlyqQeFouEZPWjAguCRqYlAq2K_FyRjIH2cRZg";
     private boolean wasConnectedBeforeSleep = false;
     private boolean isSleeping = false;
 
@@ -128,13 +128,7 @@ public class MyVpnService extends VpnService {
             }
 
             onChangeState(State.DISCONNECTED);
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                stopForeground(STOP_FOREGROUND_REMOVE);
-            } else {
-                stopForeground(true);
-            }
-
+            stopForeground(STOP_FOREGROUND_REMOVE);
             stopSelf();
         }).start();
     }
@@ -191,30 +185,37 @@ public class MyVpnService extends VpnService {
 
     private void handleScreenOff() {
         DebugLog.log("Screen off detected");
-        if (vpnClientWrapper != null) {
+        if (vpnClientWrapper != null && vpnClientWrapper.isConnectionAlive()) {
             wasConnectedBeforeSleep = true;
             isSleeping = true;
             sendState(State.SLEEPING);
             updateNotification(R.string.notif_sleeping);
-
-            new Thread(() -> {
-                if (vpnClientWrapper != null) {
-                    vpnClientWrapper.stop();
-                    vpnClientWrapper = null;
-                }
-            }).start();
+            // Keep connection alive - don't stop VPN
         }
     }
 
     private void handleScreenOn() {
         DebugLog.log("Screen on detected");
+        isSleeping = false;
+
         if (wasConnectedBeforeSleep) {
             wasConnectedBeforeSleep = false;
-            isSleeping = false;
-            updateNotification(R.string.notif_reconnecting);
-            startVpnConnection();
-        } else {
-            isSleeping = false;
+
+            // Check if connection is still alive after device suspend
+            if (vpnClientWrapper != null && vpnClientWrapper.isConnectionAlive()) {
+                DebugLog.log("Connection still alive after wake");
+                sendState(State.CONNECTED);
+                updateNotification(R.string.notif_connected);
+            } else {
+                // Connection was lost during suspend, need to reconnect
+                DebugLog.log("Connection lost during suspend, reconnecting");
+                if (vpnClientWrapper != null) {
+                    vpnClientWrapper.stop();
+                    vpnClientWrapper = null;
+                }
+                updateNotification(R.string.notif_reconnecting);
+                startVpnConnection();
+            }
         }
     }
 
