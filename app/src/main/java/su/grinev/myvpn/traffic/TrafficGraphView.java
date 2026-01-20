@@ -2,19 +2,25 @@ package su.grinev.myvpn.traffic;
 
 import android.content.Context;
 import android.graphics.Canvas;
-import android.graphics.Color;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.Shader;
 import android.util.AttributeSet;
+import android.view.GestureDetector;
+import android.view.MotionEvent;
+import android.view.ScaleGestureDetector;
 import android.view.View;
 
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Custom view for rendering traffic rate graph with gradients.
+ * Supports horizontal scrolling and pinch-to-zoom.
  */
 public class TrafficGraphView extends View {
     private static final int GRID_LINES = 5;
@@ -24,6 +30,12 @@ public class TrafficGraphView extends View {
     private static final int OUTGOING_COLOR_TRANSPARENT = 0x00FFCA28;
     private static final int GRID_COLOR = 0x33FFFFFF;
     private static final int TEXT_COLOR = 0xAAFFFFFF;
+    private static final int TIME_TEXT_COLOR = 0x88FFFFFF;
+
+    private static final float MIN_SCALE = 0.5f;
+    private static final float MAX_SCALE = 5.0f;
+    private static final int MIN_VISIBLE_POINTS = 20;
+    private static final int DEFAULT_VISIBLE_POINTS = 60;
 
     private final Paint incomingPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint incomingFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -31,35 +43,50 @@ public class TrafficGraphView extends View {
     private final Paint outgoingFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint gridPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint timeTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     private final Path incomingPath = new Path();
     private final Path incomingFillPath = new Path();
     private final Path outgoingPath = new Path();
     private final Path outgoingFillPath = new Path();
 
-    private final List<Double> incomingRates = new ArrayList<>();
-    private final List<Double> outgoingRates = new ArrayList<>();
+    private final List<TrafficStats> dataPoints = new ArrayList<>();
     private double maxRate = 10.0; // Minimum 10 Mbps scale
+
+    // Scroll and zoom state
+    private float scrollOffset = 0f; // Offset in data points (can be fractional)
+    private float scale = 1.0f; // Zoom scale
+    private int visiblePoints = DEFAULT_VISIBLE_POINTS;
+
+    private final GestureDetector gestureDetector;
+    private final ScaleGestureDetector scaleGestureDetector;
+    private final SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss", Locale.US);
 
     public TrafficGraphView(Context context) {
         super(context);
+        gestureDetector = new GestureDetector(context, new GestureListener());
+        scaleGestureDetector = new ScaleGestureDetector(context, new ScaleListener());
         init();
     }
 
     public TrafficGraphView(Context context, AttributeSet attrs) {
         super(context, attrs);
+        gestureDetector = new GestureDetector(context, new GestureListener());
+        scaleGestureDetector = new ScaleGestureDetector(context, new ScaleListener());
         init();
     }
 
     public TrafficGraphView(Context context, AttributeSet attrs, int defStyleAttr) {
         super(context, attrs, defStyleAttr);
+        gestureDetector = new GestureDetector(context, new GestureListener());
+        scaleGestureDetector = new ScaleGestureDetector(context, new ScaleListener());
         init();
     }
 
     private void init() {
         // Incoming line paint (green)
         incomingPaint.setStyle(Paint.Style.STROKE);
-        incomingPaint.setStrokeWidth(4f);
+        incomingPaint.setStrokeWidth(3f);
         incomingPaint.setColor(INCOMING_COLOR);
 
         // Incoming fill paint (green gradient)
@@ -67,7 +94,7 @@ public class TrafficGraphView extends View {
 
         // Outgoing line paint (yellow)
         outgoingPaint.setStyle(Paint.Style.STROKE);
-        outgoingPaint.setStrokeWidth(4f);
+        outgoingPaint.setStrokeWidth(3f);
         outgoingPaint.setColor(OUTGOING_COLOR);
 
         // Outgoing fill paint (yellow gradient)
@@ -78,33 +105,98 @@ public class TrafficGraphView extends View {
         gridPaint.setStrokeWidth(1f);
         gridPaint.setColor(GRID_COLOR);
 
-        // Text paint
+        // Rate text paint (Y axis)
         textPaint.setColor(TEXT_COLOR);
-        textPaint.setTextSize(28f);
+        textPaint.setTextSize(24f);
+
+        // Time text paint (X axis)
+        timeTextPaint.setColor(TIME_TEXT_COLOR);
+        timeTextPaint.setTextSize(20f);
+        timeTextPaint.setTextAlign(Paint.Align.CENTER);
     }
 
     public void updateData(List<TrafficStats> history) {
-        incomingRates.clear();
-        outgoingRates.clear();
+        dataPoints.clear();
+        dataPoints.addAll(history);
 
-        maxRate = 10.0; // Reset to minimum
-
-        for (TrafficStats stats : history) {
-            double inRate = stats.getIncomingRateMbps();
-            double outRate = stats.getOutgoingRateMbps();
-
-            incomingRates.add(inRate);
-            outgoingRates.add(outRate);
-
-            maxRate = Math.max(maxRate, inRate);
-            maxRate = Math.max(maxRate, outRate);
+        // Calculate max rate from all data
+        maxRate = 10.0;
+        for (TrafficStats stats : dataPoints) {
+            maxRate = Math.max(maxRate, stats.getIncomingRateMbps());
+            maxRate = Math.max(maxRate, stats.getOutgoingRateMbps());
         }
 
         // Round up maxRate to nice number
         maxRate = Math.ceil(maxRate / 10) * 10;
         if (maxRate < 10) maxRate = 10;
 
+        // Auto-scroll to end if at the end
+        if (scrollOffset >= getMaxScrollOffset() - 1) {
+            scrollOffset = getMaxScrollOffset();
+        }
+
         invalidate();
+    }
+
+    private float getMaxScrollOffset() {
+        return Math.max(0, dataPoints.size() - visiblePoints);
+    }
+
+    @Override
+    public boolean onTouchEvent(MotionEvent event) {
+        boolean handled = scaleGestureDetector.onTouchEvent(event);
+        handled = gestureDetector.onTouchEvent(event) || handled;
+        return handled || super.onTouchEvent(event);
+    }
+
+    private class GestureListener extends GestureDetector.SimpleOnGestureListener {
+        @Override
+        public boolean onDown(MotionEvent e) {
+            return true;
+        }
+
+        @Override
+        public boolean onScroll(MotionEvent e1, MotionEvent e2, float distanceX, float distanceY) {
+            if (e1 == null) return false;
+
+            int graphWidth = getWidth() - 120; // Account for padding
+            float pointWidth = graphWidth / (float) visiblePoints;
+
+            // Convert pixel distance to data points
+            float scrollDelta = distanceX / pointWidth;
+            scrollOffset += scrollDelta;
+
+            // Clamp scroll offset
+            scrollOffset = Math.max(0, Math.min(scrollOffset, getMaxScrollOffset()));
+
+            invalidate();
+            return true;
+        }
+
+        @Override
+        public boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX, float velocityY) {
+            // Could add momentum scrolling here if desired
+            return false;
+        }
+    }
+
+    private class ScaleListener extends ScaleGestureDetector.SimpleOnScaleGestureListener {
+        @Override
+        public boolean onScale(ScaleGestureDetector detector) {
+            float scaleFactor = detector.getScaleFactor();
+            scale *= scaleFactor;
+            scale = Math.max(MIN_SCALE, Math.min(scale, MAX_SCALE));
+
+            // Update visible points based on scale
+            visiblePoints = (int) (DEFAULT_VISIBLE_POINTS / scale);
+            visiblePoints = Math.max(MIN_VISIBLE_POINTS, visiblePoints);
+
+            // Adjust scroll to keep focus point
+            scrollOffset = Math.max(0, Math.min(scrollOffset, getMaxScrollOffset()));
+
+            invalidate();
+            return true;
+        }
     }
 
     @Override
@@ -137,85 +229,116 @@ public class TrafficGraphView extends View {
 
         int width = getWidth();
         int height = getHeight();
-        int padding = 60;
-        int graphWidth = width - padding * 2;
-        int graphHeight = height - padding * 2;
+        int paddingLeft = 60;
+        int paddingRight = 60;
+        int paddingTop = 40;
+        int paddingBottom = 50;
+        int graphWidth = width - paddingLeft - paddingRight;
+        int graphHeight = height - paddingTop - paddingBottom;
 
-        // Draw grid
-        drawGrid(canvas, padding, graphWidth, graphHeight);
+        // Draw grid and labels
+        drawGrid(canvas, paddingLeft, paddingTop, graphWidth, graphHeight);
+
+        // Draw time axis
+        drawTimeAxis(canvas, paddingLeft, paddingTop, graphWidth, graphHeight);
+
+        // Clip to graph area
+        canvas.save();
+        canvas.clipRect(paddingLeft, paddingTop, paddingLeft + graphWidth, paddingTop + graphHeight);
 
         // Draw graphs
-        if (!incomingRates.isEmpty()) {
-            drawGraph(canvas, incomingRates, incomingPath, incomingFillPath,
-                    incomingPaint, incomingFillPaint, padding, graphWidth, graphHeight);
+        if (!dataPoints.isEmpty()) {
+            drawGraph(canvas, true, incomingPath, incomingFillPath,
+                    incomingPaint, incomingFillPaint, paddingLeft, paddingTop, graphWidth, graphHeight);
+            drawGraph(canvas, false, outgoingPath, outgoingFillPath,
+                    outgoingPaint, outgoingFillPaint, paddingLeft, paddingTop, graphWidth, graphHeight);
         }
 
-        if (!outgoingRates.isEmpty()) {
-            drawGraph(canvas, outgoingRates, outgoingPath, outgoingFillPath,
-                    outgoingPaint, outgoingFillPaint, padding, graphWidth, graphHeight);
-        }
+        canvas.restore();
     }
 
-    private void drawGrid(Canvas canvas, int padding, int graphWidth, int graphHeight) {
+    private void drawGrid(Canvas canvas, int paddingLeft, int paddingTop, int graphWidth, int graphHeight) {
         // Horizontal grid lines
         for (int i = 0; i <= GRID_LINES; i++) {
-            float y = padding + (graphHeight * i / (float) GRID_LINES);
-            canvas.drawLine(padding, y, padding + graphWidth, y, gridPaint);
+            float y = paddingTop + (graphHeight * i / (float) GRID_LINES);
+            canvas.drawLine(paddingLeft, y, paddingLeft + graphWidth, y, gridPaint);
 
             // Draw rate label
             double rate = maxRate * (GRID_LINES - i) / GRID_LINES;
             String label = formatRate(rate);
-            canvas.drawText(label, 5, y + 10, textPaint);
-        }
-
-        // Vertical grid lines (time markers)
-        int timeMarkers = 6;
-        for (int i = 0; i <= timeMarkers; i++) {
-            float x = padding + (graphWidth * i / (float) timeMarkers);
-            canvas.drawLine(x, padding, x, padding + graphHeight, gridPaint);
+            canvas.drawText(label, 5, y + 8, textPaint);
         }
     }
 
-    private void drawGraph(Canvas canvas, List<Double> rates, Path linePath, Path fillPath,
-                           Paint linePaint, Paint fillPaint, int padding, int graphWidth, int graphHeight) {
-        if (rates.isEmpty()) return;
+    private void drawTimeAxis(Canvas canvas, int paddingLeft, int paddingTop, int graphWidth, int graphHeight) {
+        if (dataPoints.isEmpty()) return;
+
+        int timeMarkers = 5;
+
+        for (int i = 0; i <= timeMarkers; i++) {
+            float x = paddingLeft + (graphWidth * i / (float) timeMarkers);
+
+            // Draw vertical grid line
+            canvas.drawLine(x, paddingTop, x, paddingTop + graphHeight, gridPaint);
+
+            // Calculate which data point this corresponds to
+            int dataIndex = (int) (scrollOffset + (visiblePoints * i / (float) timeMarkers));
+            if (dataIndex >= 0 && dataIndex < dataPoints.size()) {
+                TrafficStats stats = dataPoints.get(dataIndex);
+                String timeLabel = timeFormat.format(new Date(stats.getTimestamp()));
+                canvas.drawText(timeLabel, x, paddingTop + graphHeight + 35, timeTextPaint);
+            }
+        }
+    }
+
+    private void drawGraph(Canvas canvas, boolean isIncoming, Path linePath, Path fillPath,
+                           Paint linePaint, Paint fillPaint, int paddingLeft, int paddingTop,
+                           int graphWidth, int graphHeight) {
+        if (dataPoints.isEmpty()) return;
 
         linePath.reset();
         fillPath.reset();
 
-        int maxPoints = 60;
-        int dataSize = rates.size();
-        float pointSpacing = graphWidth / (float) (maxPoints - 1);
+        float pointWidth = graphWidth / (float) visiblePoints;
 
-        // Start fill path at bottom left
-        int startIndex = Math.max(0, dataSize - maxPoints);
-        float startX = padding + (maxPoints - (dataSize - startIndex)) * pointSpacing;
+        int startIndex = (int) scrollOffset;
+        int endIndex = Math.min(dataPoints.size(), startIndex + visiblePoints + 2);
 
-        fillPath.moveTo(startX, padding + graphHeight);
+        if (startIndex >= dataPoints.size()) return;
+
+        // Fractional offset for smooth scrolling
+        float fractionalOffset = scrollOffset - startIndex;
 
         boolean first = true;
-        for (int i = startIndex; i < dataSize; i++) {
-            int pointIndex = i - startIndex + (maxPoints - (dataSize - startIndex));
-            float x = padding + pointIndex * pointSpacing;
-            float y = padding + graphHeight - (float) (rates.get(i) / maxRate * graphHeight);
+        float firstX = 0, lastX = 0;
+
+        for (int i = startIndex; i < endIndex; i++) {
+            TrafficStats stats = dataPoints.get(i);
+            double rate = isIncoming ? stats.getIncomingRateMbps() : stats.getOutgoingRateMbps();
+
+            float x = paddingLeft + (i - startIndex - fractionalOffset) * pointWidth;
+            float y = paddingTop + graphHeight - (float) (rate / maxRate * graphHeight);
 
             // Clamp y to graph bounds
-            y = Math.max(padding, Math.min(padding + graphHeight, y));
+            y = Math.max(paddingTop, Math.min(paddingTop + graphHeight, y));
 
             if (first) {
                 linePath.moveTo(x, y);
+                fillPath.moveTo(x, paddingTop + graphHeight);
                 fillPath.lineTo(x, y);
+                firstX = x;
                 first = false;
             } else {
                 linePath.lineTo(x, y);
                 fillPath.lineTo(x, y);
             }
+            lastX = x;
         }
 
         // Close fill path
         if (!first) {
-            float endX = padding + graphWidth;
-            fillPath.lineTo(endX, padding + graphHeight);
+            fillPath.lineTo(lastX, paddingTop + graphHeight);
+            fillPath.lineTo(firstX, paddingTop + graphHeight);
             fillPath.close();
         }
 
@@ -226,9 +349,37 @@ public class TrafficGraphView extends View {
 
     private String formatRate(double rate) {
         if (rate >= 1000) {
-            return String.format("%.1f Gbps", rate / 1000);
+            return String.format(Locale.US, "%.1fG", rate / 1000);
+        } else if (rate >= 100) {
+            return String.format(Locale.US, "%.0fM", rate);
         } else {
-            return String.format("%.0f Mbps", rate);
+            return String.format(Locale.US, "%.1fM", rate);
         }
+    }
+
+    /**
+     * Scroll to the end of the data (most recent).
+     */
+    public void scrollToEnd() {
+        scrollOffset = getMaxScrollOffset();
+        invalidate();
+    }
+
+    /**
+     * Scroll to the beginning of the data (oldest).
+     */
+    public void scrollToStart() {
+        scrollOffset = 0;
+        invalidate();
+    }
+
+    /**
+     * Reset zoom to default.
+     */
+    public void resetZoom() {
+        scale = 1.0f;
+        visiblePoints = DEFAULT_VISIBLE_POINTS;
+        scrollOffset = Math.max(0, Math.min(scrollOffset, getMaxScrollOffset()));
+        invalidate();
     }
 }

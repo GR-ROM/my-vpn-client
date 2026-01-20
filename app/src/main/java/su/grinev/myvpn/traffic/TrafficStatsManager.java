@@ -17,8 +17,8 @@ import java.util.function.Consumer;
  */
 public class TrafficStatsManager {
     private static final TrafficStatsManager INSTANCE = new TrafficStatsManager();
-    private static final int MAX_HISTORY_SIZE = 1800;
-    private static final long UPDATE_INTERVAL_MS = 5000; // 5 second
+    private static final int MAX_HISTORY_SIZE = 3600;
+    private static final long UPDATE_INTERVAL_MS = 1000; // 1 second
     private final AtomicLong incomingBytes = new AtomicLong(0);
     private final AtomicLong outgoingBytes = new AtomicLong(0);
     private final AtomicLong lastIncomingBytes = new AtomicLong(0);
