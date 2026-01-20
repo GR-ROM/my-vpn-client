@@ -15,6 +15,7 @@ import su.grinev.myvpn.notification.VpnNotificationManager;
 import su.grinev.myvpn.settings.SettingsProvider;
 import su.grinev.myvpn.settings.SharedPreferencesSettingsProvider;
 import su.grinev.myvpn.state.VpnStateManager;
+import su.grinev.myvpn.traffic.TrafficStatsManager;
 
 @SuppressLint("VpnServicePolicy")
 public class MyVpnService extends VpnService implements ScreenStateHandler.ScreenStateCallback {
@@ -24,6 +25,7 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
     private VpnNotificationManager notificationManager;
     private ScreenStateHandler screenStateHandler;
     private final VpnStateManager stateManager = VpnStateManager.getInstance();
+    private final TrafficStatsManager trafficStats = TrafficStatsManager.getInstance();
     private final Object vpnLock = new Object();
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private VpnClientWrapper vpnClientWrapper;
@@ -35,14 +37,11 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
     public int onStartCommand(Intent intent, int flags, int startId) {
         initializeDependencies();
 
-        startForeground(
-                VpnNotificationManager.getNotificationId(),
-                notificationManager.buildNotification(R.string.notif_starting)
-        );
+        startForeground(VpnNotificationManager.getNotificationId(), notificationManager.buildNotification(R.string.notif_starting));
 
         if (intent != null && ACTION_DISCONNECT.equals(intent.getAction())) {
             wasConnectedBeforeSleep = false;
-            stopVpnSync();
+            CompletableFuture.runAsync(this::stopVpnSync, executor);
             return START_NOT_STICKY;
         }
 
@@ -110,12 +109,17 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
         updateState(state);
 
         switch (state) {
+            case CONNECTED:
+                trafficStats.start();
+                break;
             case DISCONNECTED:
+                trafficStats.stop();
                 if (!isSleeping) {
                     stopSelf();
                 }
                 break;
             case ERROR:
+                trafficStats.stop();
                 stopSelf();
                 break;
         }
@@ -197,6 +201,9 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
     @Override
     public void onDestroy() {
         DebugLog.log("VPN service destroyed");
+
+        trafficStats.stop();
+        trafficStats.reset();
 
         synchronized (vpnLock) {
             if (vpnClientWrapper != null) {

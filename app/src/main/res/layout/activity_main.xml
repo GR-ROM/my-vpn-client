@@ -58,6 +58,15 @@
                 android:text="@string/btn_connect"/>
 
             <ImageButton
+                android:id="@+id/trafficButton"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginStart="8dp"
+                android:src="@drawable/ic_traffic"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/traffic_title"/>
+
+            <ImageButton
                 android:id="@+id/settingsButton"
                 android:layout_width="48dp"
                 android:layout_height="48dp"

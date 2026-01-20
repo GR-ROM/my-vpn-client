@@ -57,24 +57,19 @@ public class VpnClient {
     private final Consumer<byte[]> onClientPacketHandler;
     private final ExecutorService executor;
     private final Consumer<String> onIpAssigned;
-    private final TunAndroid tunAndroid;
     private final Consumer<State> onStateChange;
     private final KeepAliveManager keepAliveManager;
     private final Set<State> reconnectableStates = Set.of(DISCONNECTED, WAITING);
-
     // All mutable state protected by stateLock
     private final Object stateLock = new Object();
     private volatile State state;
     private volatile boolean hasError = false;
     private int timeout = 0;
-
     // Connection resources protected by connectionLock
     private final Object connectionLock = new Object();
     private DataOutputStream serverOutputStream;
     private DataInputStream serverInputStream;
     private SSLSocket socket;
-
-    // Public state (read-only after assignment)
     public volatile String assignedIp;
     public volatile byte[] assignedIpBytes;
 
@@ -84,7 +79,6 @@ public class VpnClient {
             String jwt,
             Consumer<byte[]> onClientPacket,
             Consumer<String> onIpAssigned,
-            TunAndroid tunAndroid,
             Consumer<State> onStateChange) throws IOException, InterruptedException {
         this.jwt = jwt;
         this.onClientPacketHandler = onClientPacket;
@@ -93,7 +87,6 @@ public class VpnClient {
         this.state = DISCONNECTED;
         this.onIpAssigned = onIpAssigned;
         this.objectMapper = new BsonMapper(100, 1000, 4 * 1024, 64, null);
-        this.tunAndroid = tunAndroid;
         this.onStateChange = onStateChange;
 
         // Initialize KeepAliveManager with callback for connection dead event
@@ -155,25 +148,9 @@ public class VpnClient {
         }
     }
 
-    private boolean compareAndSetState(State expected, State newState) {
-        synchronized (stateLock) {
-            if (state == expected) {
-                state = newState;
-                return true;
-            }
-            return false;
-        }
-    }
-
     private void setError(boolean error) {
         synchronized (stateLock) {
             hasError = error;
-        }
-    }
-
-    private boolean hasError() {
-        synchronized (stateLock) {
-            return hasError;
         }
     }
 
@@ -215,9 +192,9 @@ public class VpnClient {
         }
 
         if (currentState == CONNECTING) {
-            DataOutputStream outStream = null;
-            DataInputStream inStream = null;
-            SSLSocket sslSocket = null;
+            DataOutputStream outStream;
+            DataInputStream inStream;
+            SSLSocket sslSocket;
 
             try {
                 SSLSocketFactory factory = sslContext.getSocketFactory();
@@ -413,15 +390,12 @@ public class VpnClient {
         closeConnection();
     }
 
-    public void sendToClient(byte[] packet) {
+    public void sendToServer(byte[] packet) {
         if (getState() != LIVE) {
             return;
         }
 
-        RequestDto<VpnForwardPacketRequestDto> requestDto = RequestDto.wrap(
-                FORWARD_PACKET,
-                VpnForwardPacketRequestDto.builder().packet(packet).build()
-        );
+        RequestDto<VpnForwardPacketRequestDto> requestDto = RequestDto.wrap(FORWARD_PACKET, VpnForwardPacketRequestDto.builder().packet(packet).build());
         Packet<RequestDto<?>> packetDto = Packet.ofRequest(requestDto);
 
         try {
@@ -457,20 +431,6 @@ public class VpnClient {
         synchronized (connectionLock) {
             return socket != null && socket.isConnected() && !socket.isClosed();
         }
-    }
-
-    public void disconnect() {
-        DebugLog.log("Disconnect requested");
-        keepAliveManager.stop();
-
-        synchronized (stateLock) {
-            if (state != DISCONNECTED && state != SHUTDOWN) {
-                state = DISCONNECTED;
-                hasError = false;
-            }
-        }
-        onStateChange.accept(DISCONNECTED);
-        closeConnection();
     }
 
     private void closeConnection() {

@@ -4,12 +4,13 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.function.Consumer;
 
+import su.grinev.myvpn.traffic.TrafficStatsManager;
+
 public class VpnClientWrapper extends TunHandler {
-    private final String serverAddress;
-    private final int serverPort;
     private final Tun tun;
     private final VpnClient vpnClient;
     private final boolean defaultRouteViaVpn;
+    private final TrafficStatsManager trafficStats = TrafficStatsManager.getInstance();
 
     public VpnClientWrapper(
             TunAndroid tun,
@@ -20,11 +21,9 @@ public class VpnClientWrapper extends TunHandler {
             Consumer<State> onStateChange
     ) throws IOException, InterruptedException {
         super(tun, new BufferPool(1000, 4 * 1024));
-        this.serverAddress = serverAddress;
-        this.serverPort = serverPort;
         this.tun = tun;
         this.defaultRouteViaVpn = defaultRouteViaVpn;
-        this.vpnClient = new VpnClient(serverAddress, serverPort, jwt, this::onClientPacketReceived, this::onIpAssigned, tun, onStateChange);
+        this.vpnClient = new VpnClient(serverAddress, serverPort, jwt, this::onClientPacketReceived, this::onIpAssigned, onStateChange);
     }
 
     private void onIpAssigned(String ip) {
@@ -49,12 +48,14 @@ public class VpnClientWrapper extends TunHandler {
     @Override
     public void onTunPacketReceived(byte[] packet, int bytesRead) {
         if (vpnClient.getState() == State.LIVE) {
-            vpnClient.sendToClient(Arrays.copyOf(packet, bytesRead));
+            trafficStats.addOutgoingBytes(bytesRead);
+            vpnClient.sendToServer(Arrays.copyOf(packet, bytesRead));
         }
     }
 
     public void onClientPacketReceived(byte[] packet) {
         try {
+            trafficStats.addIncomingBytes(packet.length);
             tun.writePacket(packet, packet.length);
         } catch (IOException e) {
             throw new RuntimeException(e);

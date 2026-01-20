@@ -44,6 +44,7 @@ public class MainActivity extends AppCompatActivity {
         setContentView(binding.getRoot());
         binding.connectButton.setOnClickListener(this::onConnectClicked);
         binding.settingsButton.setOnClickListener(v -> openSettings());
+        binding.trafficButton.setOnClickListener(v -> openTraffic());
         binding.captionText.setText(getString(R.string.app_name) + " v" + BuildConfig.VERSION_NAME);
 
         DebugLog.printSplash(BuildConfig.VERSION_NAME);
@@ -126,6 +127,10 @@ public class MainActivity extends AppCompatActivity {
 
     private void openSettings() {
         startActivity(new Intent(this, SettingsActivity.class));
+    }
+
+    private void openTraffic() {
+        startActivity(new Intent(this, TrafficActivity.class));
     }
 
     private void updateUI(State state) {

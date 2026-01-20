@@ -39,6 +39,11 @@
     <string name="settings_error_required">This field is required</string>
     <string name="settings_error_port">Port must be 1-65535</string>
 
+    <!-- Traffic -->
+    <string name="traffic_title">Traffic Statistics</string>
+    <string name="incoming">Incoming</string>
+    <string name="outgoing">Outgoing</string>
+
     <!-- Validation messages -->
     <string name="validation_ip_empty">Server IP is not configured</string>
     <string name="validation_ip_invalid">Invalid IP address format</string>
