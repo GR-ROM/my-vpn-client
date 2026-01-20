@@ -43,12 +43,12 @@ public class VpnClientWrapper extends TunHandler {
     }
 
     public boolean isConnectionAlive() {
-        return vpnClient.state == State.LIVE && vpnClient.isSocketConnected();
+        return vpnClient.getState() == State.LIVE && vpnClient.isSocketConnected();
     }
 
     @Override
     public void onTunPacketReceived(byte[] packet, int bytesRead) {
-        if (vpnClient.state == State.LIVE) {
+        if (vpnClient.getState() == State.LIVE) {
             vpnClient.sendToClient(Arrays.copyOf(packet, bytesRead));
         }
     }
