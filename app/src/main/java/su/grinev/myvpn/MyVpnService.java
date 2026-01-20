@@ -5,40 +5,29 @@ import android.content.Intent;
 import android.net.VpnService;
 import android.util.Log;
 
-import su.grinev.myvpn.handlers.NetworkStateHandler;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
 import su.grinev.myvpn.handlers.ScreenStateHandler;
 import su.grinev.myvpn.notification.VpnNotificationManager;
 import su.grinev.myvpn.settings.SettingsProvider;
 import su.grinev.myvpn.settings.SharedPreferencesSettingsProvider;
 import su.grinev.myvpn.state.VpnStateManager;
 
-/**
- * VPN Foreground Service - Coordinator.
- * Single Responsibility: Coordinate VPN lifecycle and delegate to specialized handlers.
- *
- * Dependencies are injected via constructor or lazy initialization,
- * following Dependency Inversion Principle.
- */
 @SuppressLint("VpnServicePolicy")
-public class MyVpnService extends VpnService implements
-        ScreenStateHandler.ScreenStateCallback,
-        NetworkStateHandler.NetworkStateCallback {
+public class MyVpnService extends VpnService implements ScreenStateHandler.ScreenStateCallback {
 
     public static final String ACTION_DISCONNECT = "su.grinev.myvpn.DISCONNECT";
-
-    // Dependencies (injected or lazily initialized)
     private SettingsProvider settingsProvider;
     private VpnNotificationManager notificationManager;
     private ScreenStateHandler screenStateHandler;
-    private NetworkStateHandler networkStateHandler;
     private final VpnStateManager stateManager = VpnStateManager.getInstance();
-
-    // VPN connection state with synchronization
     private final Object vpnLock = new Object();
+    private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private VpnClientWrapper vpnClientWrapper;
     private volatile boolean isConnecting = false;
-
-    // Sleep state tracking
     private boolean wasConnectedBeforeSleep = false;
     private boolean isSleeping = false;
 
@@ -57,9 +46,7 @@ public class MyVpnService extends VpnService implements
             return START_NOT_STICKY;
         }
 
-        // Register handlers
         screenStateHandler.register();
-        networkStateHandler.register();
 
         DebugLog.log("VPN service started");
         DebugLog.log("Server: " + settingsProvider.getServerIp() + ":" + settingsProvider.getServerPort());
@@ -78,9 +65,6 @@ public class MyVpnService extends VpnService implements
         if (screenStateHandler == null) {
             screenStateHandler = new ScreenStateHandler(this, this);
         }
-        if (networkStateHandler == null) {
-            networkStateHandler = new NetworkStateHandler(this, this);
-        }
     }
 
     private void startVpnConnection() {
@@ -92,33 +76,31 @@ public class MyVpnService extends VpnService implements
             isConnecting = true;
         }
 
-        new Thread(() -> {
-            try {
-                updateState(State.CONNECTING);
-                TunAndroid tunAndroid = new TunAndroid(this);
+        try {
+            updateState(State.CONNECTING);
+            TunAndroid tunAndroid = new TunAndroid(this);
 
-                VpnClientWrapper newWrapper = new VpnClientWrapper(
-                        tunAndroid,
-                        settingsProvider.getServerIp(),
-                        settingsProvider.getServerPort(),
-                        settingsProvider.getJwt(),
-                        true,
-                        this::onVpnStateChanged
-                );
+            VpnClientWrapper newWrapper = new VpnClientWrapper(
+                    tunAndroid,
+                    settingsProvider.getServerIp(),
+                    settingsProvider.getServerPort(),
+                    settingsProvider.getJwt(),
+                    true,
+                    this::onVpnStateChanged
+            );
 
-                synchronized (vpnLock) {
-                    vpnClientWrapper = newWrapper;
-                    isConnecting = false;
-                }
-
-            } catch (Exception e) {
-                DebugLog.log("VPN error: " + Log.getStackTraceString(e));
-                synchronized (vpnLock) {
-                    isConnecting = false;
-                }
-                onVpnStateChanged(State.ERROR);
+            synchronized (vpnLock) {
+                vpnClientWrapper = newWrapper;
+                isConnecting = false;
             }
-        }, "VpnConnectionThread").start();
+
+        } catch (Exception e) {
+            DebugLog.log("VPN error: " + Log.getStackTraceString(e));
+            synchronized (vpnLock) {
+                isConnecting = false;
+            }
+            onVpnStateChanged(State.ERROR);
+        }
     }
 
     /**
@@ -179,32 +161,12 @@ public class MyVpnService extends VpnService implements
         }
     }
 
-    // ==================== NetworkStateCallback Implementation ====================
-
-    @Override
-    public void onNetworkChanged() {
-        synchronized (vpnLock) {
-            if (vpnClientWrapper == null && !isConnecting) {
-                return;
-            }
-        }
-
-        DebugLog.log("Network changed, reconnecting");
-        reconnect();
-    }
-
-    @Override
-    public void onNetworkLost() {
-        DebugLog.log("Network lost");
-    }
-
     // ==================== Connection Management ====================
 
     private void reconnect() {
-        notificationManager.updateNotification(R.string.notif_reconnecting);
-        stateManager.setState(State.CONNECTING);
-
-        new Thread(() -> {
+        CompletableFuture.runAsync(() -> {
+            notificationManager.updateNotification(R.string.notif_reconnecting);
+            stateManager.setState(State.CONNECTING);
             synchronized (vpnLock) {
                 if (vpnClientWrapper != null) {
                     vpnClientWrapper.stop();
@@ -213,11 +175,7 @@ public class MyVpnService extends VpnService implements
                 isConnecting = false;
             }
             startVpnConnection();
-        }, "ReconnectThread").start();
-    }
-
-    private void stopVpn() {
-        new Thread(this::stopVpnSync, "VpnStopThread").start();
+        }, executor);
     }
 
     private void stopVpnSync() {
@@ -252,12 +210,21 @@ public class MyVpnService extends VpnService implements
             screenStateHandler.unregister();
         }
 
-        if (networkStateHandler != null) {
-            networkStateHandler.unregister();
-        }
-
+        shutdownExecutor();
         stateManager.reset();
         super.onDestroy();
+    }
+
+    private void shutdownExecutor() {
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(500, TimeUnit.MILLISECONDS)) {
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 
     @Override
@@ -275,10 +242,6 @@ public class MyVpnService extends VpnService implements
 
         if (screenStateHandler != null) {
             screenStateHandler.unregister();
-        }
-
-        if (networkStateHandler != null) {
-            networkStateHandler.unregister();
         }
 
         stopForeground(STOP_FOREGROUND_REMOVE);

@@ -25,6 +25,10 @@ import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 import javax.net.ssl.SSLContext;
@@ -51,7 +55,7 @@ public class VpnClient {
     private final BsonMapper objectMapper;
     private final SSLContext sslContext;
     private final Consumer<byte[]> onClientPacketHandler;
-    private final Thread worker;
+    private final ExecutorService executor;
     private final Consumer<String> onIpAssigned;
     private final TunAndroid tunAndroid;
     private final Consumer<State> onStateChange;
@@ -116,20 +120,27 @@ public class VpnClient {
             throw new RuntimeException(e);
         }
 
-        worker = new Thread(() -> {
-            while (getState() != SHUTDOWN) {
-                try {
-                    run();
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    setState(SHUTDOWN);
-                    DebugLog.log("VPN client is shutdown");
-                } catch (NoSuchAlgorithmException | KeyManagementException e) {
-                    throw new RuntimeException(e);
-                }
+        executor = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "VpnClientWorker");
+            t.setDaemon(false);
+            return t;
+        });
+
+        CompletableFuture.runAsync(this::runWorkerLoop, executor);
+    }
+
+    private void runWorkerLoop() {
+        while (getState() != SHUTDOWN) {
+            try {
+                run();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                setState(SHUTDOWN);
+                DebugLog.log("VPN client is shutdown");
+            } catch (NoSuchAlgorithmException | KeyManagementException e) {
+                throw new RuntimeException(e);
             }
-        }, "VpnClientWorker");
-        worker.start();
+        }
     }
 
     public State getState() {
@@ -431,10 +442,13 @@ public class VpnClient {
         setState(SHUTDOWN);
         closeConnection();
 
+        executor.shutdown();
         try {
-            worker.interrupt();
-            worker.join(1000);
+            if (!executor.awaitTermination(1000, TimeUnit.MILLISECONDS)) {
+                executor.shutdownNow();
+            }
         } catch (InterruptedException e) {
+            executor.shutdownNow();
             Thread.currentThread().interrupt();
         }
     }
