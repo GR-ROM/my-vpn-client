@@ -1,301 +1,262 @@
 package su.grinev.myvpn;
 
 import android.annotation.SuppressLint;
-import android.app.Notification;
-import android.app.NotificationChannel;
-import android.app.NotificationManager;
-import android.app.PendingIntent;
-import android.content.BroadcastReceiver;
-import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
-import android.net.ConnectivityManager;
-import android.net.Network;
-import android.net.NetworkCapabilities;
-import android.net.NetworkRequest;
 import android.net.VpnService;
 import android.util.Log;
 
-import androidx.core.app.NotificationCompat;
+import su.grinev.myvpn.handlers.NetworkStateHandler;
+import su.grinev.myvpn.handlers.ScreenStateHandler;
+import su.grinev.myvpn.notification.VpnNotificationManager;
+import su.grinev.myvpn.settings.SettingsProvider;
+import su.grinev.myvpn.settings.SharedPreferencesSettingsProvider;
+import su.grinev.myvpn.state.VpnStateManager;
 
-import java.util.function.Consumer;
-
+/**
+ * VPN Foreground Service - Coordinator.
+ * Single Responsibility: Coordinate VPN lifecycle and delegate to specialized handlers.
+ *
+ * Dependencies are injected via constructor or lazy initialization,
+ * following Dependency Inversion Principle.
+ */
 @SuppressLint("VpnServicePolicy")
-public class MyVpnService extends VpnService {
-    private static final String CHANNEL_ID = "vpn";
-    private static final int NOTIFICATION_ID = 1;
+public class MyVpnService extends VpnService implements
+        ScreenStateHandler.ScreenStateCallback,
+        NetworkStateHandler.NetworkStateCallback {
+
     public static final String ACTION_DISCONNECT = "su.grinev.myvpn.DISCONNECT";
-    private static volatile State currentState = State.DISCONNECTED;
-    private static volatile Consumer<State> stateListener;
+
+    // Dependencies (injected or lazily initialized)
+    private SettingsProvider settingsProvider;
+    private VpnNotificationManager notificationManager;
+    private ScreenStateHandler screenStateHandler;
+    private NetworkStateHandler networkStateHandler;
+    private final VpnStateManager stateManager = VpnStateManager.getInstance();
+
+    // VPN connection state with synchronization
+    private final Object vpnLock = new Object();
     private VpnClientWrapper vpnClientWrapper;
-    private String vpnServer;
-    private int port;
-    private String jwt;
+    private volatile boolean isConnecting = false;
+
+    // Sleep state tracking
     private boolean wasConnectedBeforeSleep = false;
     private boolean isSleeping = false;
-    private ConnectivityManager connectivityManager;
-    private Network currentNetwork;
-
-    private final ConnectivityManager.NetworkCallback networkCallback = new ConnectivityManager.NetworkCallback() {
-        @Override
-        public void onAvailable(Network network) {
-            DebugLog.log("Network available: " + network);
-            if (currentNetwork != null && !currentNetwork.equals(network)) {
-                DebugLog.log("Network changed, reconnecting");
-                handleNetworkChange();
-            }
-            currentNetwork = network;
-        }
-
-        @Override
-        public void onLost(Network network) {
-            DebugLog.log("Network lost: " + network);
-            if (network.equals(currentNetwork)) {
-                currentNetwork = null;
-            }
-        }
-    };
-
-    private final BroadcastReceiver screenReceiver = new BroadcastReceiver() {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            if (Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) {
-                handleScreenOff();
-            } else if (Intent.ACTION_SCREEN_ON.equals(intent.getAction())) {
-                handleScreenOn();
-            }
-        }
-    };
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        startForeground(NOTIFICATION_ID, buildNotification(R.string.notif_starting));
+        initializeDependencies();
+
+        startForeground(
+                VpnNotificationManager.getNotificationId(),
+                notificationManager.buildNotification(R.string.notif_starting)
+        );
 
         if (intent != null && ACTION_DISCONNECT.equals(intent.getAction())) {
             wasConnectedBeforeSleep = false;
-            stopVpn();
+            stopVpnSync();
             return START_NOT_STICKY;
         }
 
-        IntentFilter filter = new IntentFilter();
-        filter.addAction(Intent.ACTION_SCREEN_OFF);
-        filter.addAction(Intent.ACTION_SCREEN_ON);
-        registerReceiver(screenReceiver, filter);
-
-        // Register network change listener
-        connectivityManager = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
-        NetworkRequest networkRequest = new NetworkRequest.Builder()
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .build();
-        connectivityManager.registerNetworkCallback(networkRequest, networkCallback);
-
-        // Load settings
-        vpnServer = SettingsActivity.getServerIp(this);
-        port = SettingsActivity.getServerPort(this);
-        jwt = SettingsActivity.getJwt(this);
+        // Register handlers
+        screenStateHandler.register();
+        networkStateHandler.register();
 
         DebugLog.log("VPN service started");
-        DebugLog.log("Server: " + vpnServer + ":" + port);
-        startVpnConnection();
+        DebugLog.log("Server: " + settingsProvider.getServerIp() + ":" + settingsProvider.getServerPort());
 
+        startVpnConnection();
         return START_STICKY;
     }
 
+    private void initializeDependencies() {
+        if (settingsProvider == null) {
+            settingsProvider = new SharedPreferencesSettingsProvider(this);
+        }
+        if (notificationManager == null) {
+            notificationManager = new VpnNotificationManager(this, ACTION_DISCONNECT, MyVpnService.class);
+        }
+        if (screenStateHandler == null) {
+            screenStateHandler = new ScreenStateHandler(this, this);
+        }
+        if (networkStateHandler == null) {
+            networkStateHandler = new NetworkStateHandler(this, this);
+        }
+    }
+
     private void startVpnConnection() {
+        synchronized (vpnLock) {
+            if (isConnecting) {
+                DebugLog.log("Connection already in progress, ignoring");
+                return;
+            }
+            isConnecting = true;
+        }
+
         new Thread(() -> {
             try {
-                sendState(State.CONNECTING);
+                updateState(State.CONNECTING);
                 TunAndroid tunAndroid = new TunAndroid(this);
 
-                vpnClientWrapper = new VpnClientWrapper(
+                VpnClientWrapper newWrapper = new VpnClientWrapper(
                         tunAndroid,
-                        vpnServer,
-                        port,
-                        jwt,
+                        settingsProvider.getServerIp(),
+                        settingsProvider.getServerPort(),
+                        settingsProvider.getJwt(),
                         true,
-                        this::onChangeState
+                        this::onVpnStateChanged
                 );
+
+                synchronized (vpnLock) {
+                    vpnClientWrapper = newWrapper;
+                    isConnecting = false;
+                }
 
             } catch (Exception e) {
                 DebugLog.log("VPN error: " + Log.getStackTraceString(e));
-                onChangeState(State.ERROR);
+                synchronized (vpnLock) {
+                    isConnecting = false;
+                }
+                onVpnStateChanged(State.ERROR);
             }
         }, "VpnConnectionThread").start();
     }
 
-    private void onChangeState(State state) {
-        sendState(state);
+    /**
+     * Callback from VpnClientWrapper when state changes.
+     */
+    private void onVpnStateChanged(State state) {
+        updateState(state);
 
         switch (state) {
-            case CONNECTING:
-                updateNotification(R.string.notif_connecting);
-                break;
-
-            case CONNECTED:
-                updateNotification(R.string.notif_connected);
-                break;
-
             case DISCONNECTED:
-                updateNotification(R.string.notif_disconnected);
                 if (!isSleeping) {
                     stopSelf();
                 }
                 break;
-
-            case SLEEPING:
-                updateNotification(R.string.notif_sleeping);
-                break;
-
             case ERROR:
-                updateNotification(R.string.notif_error);
                 stopSelf();
                 break;
         }
     }
 
-    private void sendState(State state) {
-        currentState = state;
-        Consumer<State> listener = stateListener;
-        if (listener != null) {
-            listener.accept(state);
-        }
+    private void updateState(State state) {
+        stateManager.setState(state);
+        notificationManager.updateNotificationForState(state);
     }
 
-    public static void observeState(Consumer<State> listener) {
-        stateListener = listener;
-        listener.accept(currentState);
-    }
+    // ==================== ScreenStateCallback Implementation ====================
 
-    public static void unobserveState() {
-        stateListener = null;
-    }
-
-    public static State getCurrentState() {
-        return currentState;
-    }
-
-    private void stopVpn() {
-        new Thread(() -> {
-            if (vpnClientWrapper != null) {
-                vpnClientWrapper.stop();
-                vpnClientWrapper = null;
-            }
-
-            onChangeState(State.DISCONNECTED);
-            stopForeground(STOP_FOREGROUND_REMOVE);
-            stopSelf();
-        }).start();
-    }
-
-    private void updateNotification(int textResId) {
-        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        if (nm != null) {
-            nm.notify(NOTIFICATION_ID, buildNotification(textResId));
-        }
-    }
-
-    private Notification buildNotification(int textResId) {
-        createNotificationChannel();
-
-        Intent disconnect = new Intent(this, MyVpnService.class);
-        disconnect.setAction(ACTION_DISCONNECT);
-        PendingIntent disconnectPi = PendingIntent.getService(
-                this,
-                0,
-                disconnect,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-        );
-
-        Intent ui = new Intent(this, MainActivity.class);
-        PendingIntent uiPi = PendingIntent.getActivity(
-                this,
-                0,
-                ui,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-        );
-
-        return new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setSmallIcon(R.drawable.ic_vpn_key)
-                .setContentTitle(getString(R.string.app_name))
-                .setContentText(getString(textResId))
-                .setContentIntent(uiPi)
-                .setOngoing(true)
-                .setOnlyAlertOnce(true)
-                .addAction(R.drawable.ic_disconnect, getString(R.string.btn_disconnect), disconnectPi)
-                .build();
-    }
-
-    private void createNotificationChannel() {
-        NotificationChannel ch = new NotificationChannel(
-                CHANNEL_ID,
-                "VPN",
-                NotificationManager.IMPORTANCE_LOW
-        );
-        NotificationManager nm = getSystemService(NotificationManager.class);
-        if (nm != null) nm.createNotificationChannel(ch);
-    }
-
-    private void handleNetworkChange() {
-        if (vpnClientWrapper != null) {
-            updateNotification(R.string.notif_reconnecting);
-            sendState(State.CONNECTING);
-
-            new Thread(() -> {
-                if (vpnClientWrapper != null) {
-                    vpnClientWrapper.stop();
-                    vpnClientWrapper = null;
-                }
-                startVpnConnection();
-            }).start();
-        }
-    }
-
-    private void handleScreenOff() {
-        DebugLog.log("Screen off detected");
-        if (vpnClientWrapper != null && vpnClientWrapper.isConnectionAlive()) {
-            wasConnectedBeforeSleep = true;
-            isSleeping = true;
-            sendState(State.SLEEPING);
-            updateNotification(R.string.notif_sleeping);
-            // Keep connection alive - don't stop VPN
-        }
-    }
-
-    private void handleScreenOn() {
-        DebugLog.log("Screen on detected");
-        isSleeping = false;
-
-        if (wasConnectedBeforeSleep) {
-            wasConnectedBeforeSleep = false;
-
-            // Check if connection is still alive after device suspend
+    @Override
+    public void onScreenOff() {
+        synchronized (vpnLock) {
             if (vpnClientWrapper != null && vpnClientWrapper.isConnectionAlive()) {
-                DebugLog.log("Connection still alive after wake");
-                sendState(State.CONNECTED);
-                updateNotification(R.string.notif_connected);
-            } else {
-                // Connection was lost during suspend, need to reconnect
-                DebugLog.log("Connection lost during suspend, reconnecting");
-                if (vpnClientWrapper != null) {
-                    vpnClientWrapper.stop();
-                    vpnClientWrapper = null;
-                }
-                updateNotification(R.string.notif_reconnecting);
-                startVpnConnection();
+                wasConnectedBeforeSleep = true;
+                isSleeping = true;
+                updateState(State.SLEEPING);
             }
         }
     }
 
     @Override
+    public void onScreenOn() {
+        isSleeping = false;
+
+        if (wasConnectedBeforeSleep) {
+            wasConnectedBeforeSleep = false;
+
+            boolean connectionAlive;
+            synchronized (vpnLock) {
+                connectionAlive = vpnClientWrapper != null && vpnClientWrapper.isConnectionAlive();
+            }
+
+            if (connectionAlive) {
+                DebugLog.log("Connection still alive after wake");
+                updateState(State.CONNECTED);
+            } else {
+                DebugLog.log("Connection lost during suspend, reconnecting");
+                reconnect();
+            }
+        }
+    }
+
+    // ==================== NetworkStateCallback Implementation ====================
+
+    @Override
+    public void onNetworkChanged() {
+        synchronized (vpnLock) {
+            if (vpnClientWrapper == null && !isConnecting) {
+                return;
+            }
+        }
+
+        DebugLog.log("Network changed, reconnecting");
+        reconnect();
+    }
+
+    @Override
+    public void onNetworkLost() {
+        DebugLog.log("Network lost");
+    }
+
+    // ==================== Connection Management ====================
+
+    private void reconnect() {
+        notificationManager.updateNotification(R.string.notif_reconnecting);
+        stateManager.setState(State.CONNECTING);
+
+        new Thread(() -> {
+            synchronized (vpnLock) {
+                if (vpnClientWrapper != null) {
+                    vpnClientWrapper.stop();
+                    vpnClientWrapper = null;
+                }
+                isConnecting = false;
+            }
+            startVpnConnection();
+        }, "ReconnectThread").start();
+    }
+
+    private void stopVpn() {
+        new Thread(this::stopVpnSync, "VpnStopThread").start();
+    }
+
+    private void stopVpnSync() {
+        synchronized (vpnLock) {
+            if (vpnClientWrapper != null) {
+                vpnClientWrapper.stop();
+                vpnClientWrapper = null;
+            }
+            isConnecting = false;
+        }
+
+        updateState(State.DISCONNECTED);
+        stopForeground(STOP_FOREGROUND_REMOVE);
+        stopSelf();
+    }
+
+    // ==================== Lifecycle ====================
+
+    @Override
     public void onDestroy() {
-        try {
-            unregisterReceiver(screenReceiver);
-        } catch (IllegalArgumentException e) {
-            // Receiver was not registered
+        DebugLog.log("VPN service destroyed");
+
+        synchronized (vpnLock) {
+            if (vpnClientWrapper != null) {
+                vpnClientWrapper.stop();
+                vpnClientWrapper = null;
+            }
+            isConnecting = false;
         }
-        if (connectivityManager != null) {
-            connectivityManager.unregisterNetworkCallback(networkCallback);
+
+        if (screenStateHandler != null) {
+            screenStateHandler.unregister();
         }
+
+        if (networkStateHandler != null) {
+            networkStateHandler.unregister();
+        }
+
+        stateManager.reset();
         super.onDestroy();
     }
 
@@ -304,24 +265,50 @@ public class MyVpnService extends VpnService {
         DebugLog.log("App swiped away, stopping VPN service");
         wasConnectedBeforeSleep = false;
 
-        if (vpnClientWrapper != null) {
-            vpnClientWrapper.stop();
-            vpnClientWrapper = null;
+        synchronized (vpnLock) {
+            if (vpnClientWrapper != null) {
+                vpnClientWrapper.stop();
+                vpnClientWrapper = null;
+            }
+            isConnecting = false;
         }
 
-        try {
-            unregisterReceiver(screenReceiver);
-        } catch (IllegalArgumentException e) {
-            // Receiver was not registered
+        if (screenStateHandler != null) {
+            screenStateHandler.unregister();
         }
 
-        if (connectivityManager != null) {
-            connectivityManager.unregisterNetworkCallback(networkCallback);
+        if (networkStateHandler != null) {
+            networkStateHandler.unregister();
         }
 
         stopForeground(STOP_FOREGROUND_REMOVE);
-
         stopSelf();
         super.onTaskRemoved(rootIntent);
+    }
+
+    // ==================== Static Accessors (for backward compatibility) ====================
+
+    /**
+     * @deprecated Use VpnStateManager.getInstance().observeState() instead
+     */
+    @Deprecated
+    public static void observeState(java.util.function.Consumer<State> listener) {
+        VpnStateManager.getInstance().observeState(listener);
+    }
+
+    /**
+     * @deprecated Use VpnStateManager.getInstance().unobserveState() instead
+     */
+    @Deprecated
+    public static void unobserveState(java.util.function.Consumer<State> listener) {
+        VpnStateManager.getInstance().unobserveState(listener);
+    }
+
+    /**
+     * @deprecated Use VpnStateManager.getInstance().getState() instead
+     */
+    @Deprecated
+    public static State getCurrentState() {
+        return VpnStateManager.getInstance().getState();
     }
 }

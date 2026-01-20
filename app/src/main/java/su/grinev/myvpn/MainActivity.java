@@ -8,18 +8,37 @@ import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
 
-import java.util.regex.Pattern;
+import java.util.function.Consumer;
 
 import su.grinev.myvpn.databinding.ActivityMainBinding;
+import su.grinev.myvpn.settings.SettingsProvider;
+import su.grinev.myvpn.settings.SettingsValidator;
+import su.grinev.myvpn.settings.SharedPreferencesSettingsProvider;
+import su.grinev.myvpn.state.VpnStateManager;
 
+/**
+ * Main activity for VPN client.
+ * Single Responsibility: Handle UI and user interactions.
+ * Dependency Inversion: Depends on abstractions (SettingsProvider, VpnStateManager).
+ */
 public class MainActivity extends AppCompatActivity {
 
     private ActivityMainBinding binding;
     private State currentState = State.DISCONNECTED;
 
+    // Dependencies
+    private SettingsProvider settingsProvider;
+    private SettingsValidator settingsValidator;
+    private final VpnStateManager stateManager = VpnStateManager.getInstance();
+
+    // Keep a strong reference to the listener for proper unregistration
+    private final Consumer<State> stateListener = this::updateUI;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        initializeDependencies();
 
         binding = ActivityMainBinding.inflate(getLayoutInflater());
         setContentView(binding.getRoot());
@@ -37,21 +56,29 @@ public class MainActivity extends AppCompatActivity {
         updateUI(State.DISCONNECTED);
     }
 
+    private void initializeDependencies() {
+        settingsProvider = new SharedPreferencesSettingsProvider(this);
+        settingsValidator = new SettingsValidator(this);
+    }
+
     @Override
     protected void onStart() {
         super.onStart();
-        MyVpnService.observeState(state -> runOnUiThread(() -> updateUI(state)));
+        // Register with strong reference - callback is already posted to main thread by VpnStateManager
+        stateManager.observeState(stateListener);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        updateUI(MyVpnService.getCurrentState());
+        // Sync UI with current state in case it changed while paused
+        updateUI(stateManager.getState());
     }
 
     @Override
     protected void onStop() {
-        MyVpnService.unobserveState();
+        // Unregister using the same listener reference to ensure proper removal
+        stateManager.unobserveState(stateListener);
         super.onStop();
     }
 
@@ -85,7 +112,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void startVpn() {
-        String validationError = validateSettings();
+        String validationError = settingsValidator.validate(settingsProvider);
         if (validationError != null) {
             Toast.makeText(this, validationError, Toast.LENGTH_LONG).show();
             DebugLog.log("Validation failed: " + validationError);
@@ -95,42 +122,6 @@ public class MainActivity extends AppCompatActivity {
         Intent i = new Intent(this, MyVpnService.class);
         startForegroundService(i);
         DebugLog.log("VPN start");
-    }
-
-    private String validateSettings() {
-        String serverIp = SettingsActivity.getServerIp(this);
-        int serverPort = SettingsActivity.getServerPort(this);
-        String jwt = SettingsActivity.getJwt(this);
-
-        // Validate IP address
-        if (serverIp == null || serverIp.trim().isEmpty()) {
-            return getString(R.string.validation_ip_empty);
-        }
-
-        Pattern ipPattern = Pattern.compile(
-                "^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$"
-        );
-        if (!ipPattern.matcher(serverIp.trim()).matches()) {
-            return getString(R.string.validation_ip_invalid);
-        }
-
-        // Validate port
-        if (serverPort < 1 || serverPort > 65535) {
-            return getString(R.string.validation_port_invalid);
-        }
-
-        // Validate JWT
-        if (jwt == null || jwt.trim().isEmpty()) {
-            return getString(R.string.validation_jwt_empty);
-        }
-
-        // Basic JWT format check (header.payload.signature)
-        String[] jwtParts = jwt.trim().split("\\.");
-        if (jwtParts.length != 3) {
-            return getString(R.string.validation_jwt_invalid);
-        }
-
-        return null;
     }
 
     private void openSettings() {
@@ -167,5 +158,4 @@ public class MainActivity extends AppCompatActivity {
         };
         binding.statusText.setText(statusResId);
     }
-
 }

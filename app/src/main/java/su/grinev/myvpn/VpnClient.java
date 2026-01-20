@@ -3,6 +3,7 @@ package su.grinev.myvpn;
 import static su.grinev.model.Command.DISCONNECT;
 import static su.grinev.model.Command.FORWARD_PACKET;
 import static su.grinev.model.Command.PING;
+import static su.grinev.model.Command.PONG;
 import static su.grinev.model.Status.OK;
 import static su.grinev.myvpn.NetUtils.intToIpv4;
 import static su.grinev.myvpn.NetUtils.ipv4ToIntBytes;
@@ -44,6 +45,7 @@ import su.grinev.model.Status;
 import su.grinev.model.VpnForwardPacketRequestDto;
 import su.grinev.model.VpnIpResponseDto;
 import su.grinev.model.VpnLoginRequestDto;
+import su.grinev.myvpn.keepalive.KeepAliveManager;
 
 public class VpnClient {
     private static final int TIMEOUT = 10;
@@ -66,6 +68,7 @@ public class VpnClient {
     private final Consumer<String> onIpAssigned;
     private final TunAndroid tunAndroid;
     private final Consumer<State> onStateChange;
+    private final KeepAliveManager keepAliveManager;
 
     public VpnClient(
             String serverAddress,
@@ -84,6 +87,9 @@ public class VpnClient {
         this.objectMapper = new BsonMapper(100, 1000, 4 * 1024, 64, null);
         this.tunAndroid = tunAndroid;
         this.onStateChange = onStateChange;
+
+        // Initialize KeepAliveManager with callback for connection dead event
+        this.keepAliveManager = new KeepAliveManager(this, objectMapper, this::onKeepAliveFailed);
 
         try {
             sslContext = SSLContext.getInstance("TLS");
@@ -181,6 +187,9 @@ public class VpnClient {
                                 state = LIVE;
                                 DebugLog.log("Virtual IP: " + assignedIp);
                                 onIpAssigned.accept(assignedIp);
+
+                                // Start keep-alive monitoring now that connection is live
+                                keepAliveManager.start(serverOutputStream);
                             } else {
                                 DebugLog.log("Auth failed: " + responseDto.getStatus().name());
                                 state = DISCONNECTED;
@@ -189,8 +198,20 @@ public class VpnClient {
                         }
                         case LIVE -> {
                             Packet<?> packet = objectMapper.deserialize(serverInputStream, Packet.class);
+
+                            // Notify keep-alive that we received a packet
+                            keepAliveManager.onPacketReceived();
+
+                            // Handle response packets (e.g., PONG response to our PING)
+                            if (packet.getPayload() instanceof ResponseDto<?> responseDto) {
+                                // This is a response to our PING - PONG received
+                                keepAliveManager.onPongReceived();
+                                continue;
+                            }
+
                             RequestDto<VpnForwardPacketRequestDto> requestDto = (RequestDto<VpnForwardPacketRequestDto>) packet.getPayload();
 
+                            // Handle PING from server
                             if (requestDto.getCommand() == PING) {
                                 packet = Packet.ofResponse(ResponseDto.ofRequest(requestDto, OK));
                                 synchronized (this) {
@@ -213,6 +234,9 @@ public class VpnClient {
             } catch (RuntimeException | IOException e) {
                 handleError(e);
             } finally {
+                // Stop keep-alive monitoring when connection ends
+                keepAliveManager.stop();
+
                 try {
                     if (serverOutputStream != null) {
                         serverOutputStream.close();
@@ -239,8 +263,20 @@ public class VpnClient {
 
     private void handleError(Throwable e) {
         e.printStackTrace();
+        keepAliveManager.stop();
         state = DISCONNECTED;
         hasError = true;
+    }
+
+    /**
+     * Called by KeepAliveManager when connection is detected as dead.
+     * Triggers reconnection by setting error state.
+     */
+    private void onKeepAliveFailed() {
+        DebugLog.log("KeepAlive failed, triggering reconnection");
+        hasError = true;
+        state = DISCONNECTED;
+        onStateChange.accept(DISCONNECTED);
     }
 
     public void sendToClient(byte[] packet) {
@@ -258,6 +294,7 @@ public class VpnClient {
     }
 
     public void stop() {
+        keepAliveManager.stop();
         disconnect();
         state = SHUTDOWN;
         try {
@@ -275,6 +312,9 @@ public class VpnClient {
     }
 
     public void disconnect() {
+        // Stop keep-alive monitoring
+        keepAliveManager.stop();
+
         if (state != DISCONNECTED) {
             state = DISCONNECTED;
             onStateChange.accept(DISCONNECTED);
