@@ -29,6 +29,9 @@ public class VpnClientWrapper extends TunHandler {
     private void onIpAssigned(String ip) {
         try {
             tun.configureTun(ip, defaultRouteViaVpn);
+            if (!super.running) {
+                super.start();
+            }
         } catch (InterruptedException | IOException e) {
             throw new RuntimeException(e);
         }

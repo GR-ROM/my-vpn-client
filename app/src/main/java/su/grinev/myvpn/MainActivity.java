@@ -148,6 +148,7 @@ public class MainActivity extends AppCompatActivity {
                 break;
             case DISCONNECTED:
             case ERROR:
+            case SHUTDOWN:
                 binding.connectButton.setText(R.string.btn_connect);
                 break;
         }

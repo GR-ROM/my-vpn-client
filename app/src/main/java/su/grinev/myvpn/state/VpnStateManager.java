@@ -24,8 +24,6 @@ public class VpnStateManager {
 
     private final Object stateLock = new Object();
     private State currentState = State.DISCONNECTED;
-
-    // Use ConcurrentHashMap with unique IDs instead of WeakReference
     private final AtomicInteger listenerIdGenerator = new AtomicInteger(0);
     private final Map<Integer, Consumer<State>> stateListeners = new ConcurrentHashMap<>();
 
@@ -35,7 +33,6 @@ public class VpnStateManager {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private VpnStateManager() {
-        // Singleton
     }
 
     public static VpnStateManager getInstance() {

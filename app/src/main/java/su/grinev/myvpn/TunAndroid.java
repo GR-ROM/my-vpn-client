@@ -19,7 +19,6 @@ public class TunAndroid implements Tun {
     private FileInputStream inputStream;
     private FileOutputStream outputStream;
     private String deviceName;
-
     public TunAndroid(VpnService vpnService) {
         this.vpnService = vpnService;
     }

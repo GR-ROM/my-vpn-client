@@ -6,6 +6,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public abstract class TunHandler {
     public static final int MAX_MTU = 4 * 1024;
     public volatile boolean stop = false;
+    protected volatile boolean running = false;
     protected final Tun tun;
     protected final Thread readerThread = new Thread(this::handleTunPackets);
     protected final BufferPool bufferPool;
@@ -13,7 +14,6 @@ public abstract class TunHandler {
     public TunHandler(Tun tun, BufferPool bufferPool) {
         this.tun = tun;
         this.bufferPool = bufferPool;
-        readerThread.start();
     }
 
     private void handleTunPackets() {
@@ -46,10 +46,16 @@ public abstract class TunHandler {
         };
     }
 
-    protected void stop() {
+    protected synchronized void start() {
+        readerThread.start();
+        running = true;
+    }
+
+    protected synchronized void stop() {
         stop = true;
         if (readerThread.isAlive()) {
             readerThread.interrupt();
         }
+        running = false;
     }
 }

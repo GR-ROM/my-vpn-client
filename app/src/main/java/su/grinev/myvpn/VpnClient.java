@@ -10,6 +10,7 @@ import static su.grinev.myvpn.State.AWAITING_LOGIN_RESPONSE;
 import static su.grinev.myvpn.State.CONNECTED;
 import static su.grinev.myvpn.State.CONNECTING;
 import static su.grinev.myvpn.State.DISCONNECTED;
+import static su.grinev.myvpn.State.ERROR;
 import static su.grinev.myvpn.State.LIVE;
 import static su.grinev.myvpn.State.LOGIN;
 import static su.grinev.myvpn.State.SHUTDOWN;
@@ -60,12 +61,10 @@ public class VpnClient {
     private final Consumer<State> onStateChange;
     private final KeepAliveManager keepAliveManager;
     private final Set<State> reconnectableStates = Set.of(DISCONNECTED, WAITING);
-    // All mutable state protected by stateLock
     private final Object stateLock = new Object();
     private volatile State state;
     private volatile boolean hasError = false;
     private int timeout = 0;
-    // Connection resources protected by connectionLock
     private final Object connectionLock = new Object();
     private DataOutputStream serverOutputStream;
     private DataInputStream serverInputStream;
@@ -146,6 +145,7 @@ public class VpnClient {
         synchronized (stateLock) {
             state = newState;
         }
+        onStateChange.accept(state);
     }
 
     private void setError(boolean error) {
@@ -155,26 +155,22 @@ public class VpnClient {
     }
 
     private void run() throws InterruptedException, NoSuchAlgorithmException, KeyManagementException {
-        State currentState;
         boolean errorFlag;
 
         synchronized (stateLock) {
             errorFlag = hasError;
             if (errorFlag) {
                 if (reconnectableStates.contains(state)) {
-                    state = WAITING;
+                    setState(WAITING);
                 }
             } else {
                 if (reconnectableStates.contains(state)) {
-                    state = CONNECTING;
+                    setState(CONNECTING);
                 }
             }
-            currentState = state;
         }
 
-        onStateChange.accept(currentState);
-
-        if (currentState == WAITING) {
+        if (getState() == WAITING) {
             synchronized (stateLock) {
                 if (timeout++ >= TIMEOUT) {
                     timeout = 0;
@@ -191,7 +187,7 @@ public class VpnClient {
             return;
         }
 
-        if (currentState == CONNECTING) {
+        if (getState() == CONNECTING) {
             DataOutputStream outStream;
             DataInputStream inStream;
             SSLSocket sslSocket;
@@ -201,13 +197,11 @@ public class VpnClient {
                 DebugLog.log("Connecting to " + serverAddress + ":" + serverPort);
                 sslSocket = (SSLSocket) factory.createSocket();
                 setupSocket(sslSocket);
-
                 sslSocket.startHandshake();
 
                 outStream = new DataOutputStream(sslSocket.getOutputStream());
                 inStream = new DataInputStream(sslSocket.getInputStream());
 
-                // Store connection resources
                 synchronized (connectionLock) {
                     socket = sslSocket;
                     serverOutputStream = outStream;
@@ -218,61 +212,45 @@ public class VpnClient {
                 DebugLog.log("Connected");
                 onStateChange.accept(CONNECTED);
 
-                // Main protocol loop
                 runProtocolLoop();
-
             } catch (RuntimeException | IOException e) {
                 DebugLog.log("Connection error: " + e.getMessage());
                 handleError();
             } finally {
-                // Stop keep-alive first
                 keepAliveManager.stop();
-
-                // Close connection resources
                 closeConnection();
-
                 DebugLog.log("Connection closed");
             }
         }
     }
 
     private void runProtocolLoop() throws IOException {
+        if (serverInputStream == null || serverOutputStream == null) {
+            setError(true);
+            setState(ERROR);
+            return;
+        }
+
         while (getState() != DISCONNECTED && getState() != SHUTDOWN) {
-            State currentState = getState();
-
-            switch (currentState) {
+            switch (getState()) {
                 case LOGIN -> {
-                    RequestDto<VpnLoginRequestDto> requestDto = RequestDto.wrap(
-                            Command.LOGIN,
-                            VpnLoginRequestDto.builder().jwt(jwt).build()
-                    );
+                    RequestDto<VpnLoginRequestDto> requestDto = RequestDto.wrap(Command.LOGIN, VpnLoginRequestDto.builder().jwt(jwt).build());
                     Packet<RequestDto<?>> packet = Packet.ofRequest(requestDto);
-
                     synchronized (connectionLock) {
-                        if (serverOutputStream != null) {
-                            objectMapper.serialize(packet, serverOutputStream);
-                        }
+                        objectMapper.serialize(packet, serverOutputStream);
                     }
                     DebugLog.log("Login request sent");
                     setState(AWAITING_LOGIN_RESPONSE);
                 }
-
                 case AWAITING_LOGIN_RESPONSE -> {
-                    DataInputStream inStream;
+                    Packet<?> packet;
                     synchronized (connectionLock) {
-                        inStream = serverInputStream;
+                        packet = objectMapper.deserialize(serverInputStream, Packet.class);
                     }
-                    if (inStream == null) {
-                        setState(DISCONNECTED);
-                        break;
-                    }
-                    // Don't hold lock during blocking read
-                    Packet<?> packet = objectMapper.deserialize(inStream, Packet.class);
-
                     ResponseDto<VpnIpResponseDto> responseDto = (ResponseDto<VpnIpResponseDto>) packet.getPayload();
 
                     if (responseDto.getStatus() == OK) {
-                        DebugLog.log("Authorized");
+                        DebugLog.log("Authenticated");
                         VpnIpResponseDto ipResponse = responseDto.getData();
                         if (ipResponse == null) {
                             DebugLog.log("No IP data in response");
@@ -286,16 +264,14 @@ public class VpnClient {
                         DebugLog.log("Virtual IP: " + assignedIp);
                         onIpAssigned.accept(assignedIp);
 
-                        // Start keep-alive monitoring now that connection is live
                         synchronized (connectionLock) {
-                            if (serverOutputStream != null) {
-                                keepAliveManager.start(serverOutputStream);
-                            }
+                            keepAliveManager.start(serverOutputStream);
                         }
                     } else {
                         DebugLog.log("Auth failed: " + responseDto.getStatus().name());
                         setError(true);
-                        setState(DISCONNECTED);
+                        setState(SHUTDOWN);
+                        return;
                     }
                 }
 
@@ -308,36 +284,25 @@ public class VpnClient {
                         setState(DISCONNECTED);
                         break;
                     }
-                    // Don't hold lock during blocking read
+
                     Packet<?> packet = objectMapper.deserialize(inStream, Packet.class);
-
-                    // Notify keep-alive that we received a packet
                     keepAliveManager.onPacketReceived();
-
-                    // Handle response packets (e.g., PONG response to our PING)
                     if (packet.getPayload() instanceof ResponseDto<?>) {
                         keepAliveManager.onPongReceived();
                         continue;
                     }
 
-                    RequestDto<VpnForwardPacketRequestDto> requestDto =
-                            (RequestDto<VpnForwardPacketRequestDto>) packet.getPayload();
+                    RequestDto<VpnForwardPacketRequestDto> requestDto = (RequestDto<VpnForwardPacketRequestDto>) packet.getPayload();
 
-                    // Handle PING from server
                     if (requestDto.getCommand() == PING) {
-                        Packet<ResponseDto<?>> response = Packet.ofResponse(
-                                ResponseDto.ofRequest(requestDto, OK)
-                        );
+                        Packet<ResponseDto<?>> response = Packet.ofResponse(ResponseDto.ofRequest(requestDto, OK));
                         synchronized (connectionLock) {
-                            if (serverOutputStream != null) {
-                                objectMapper.serialize(response, serverOutputStream);
-                            }
+                            objectMapper.serialize(response, serverOutputStream);
                         }
                         continue;
                     }
 
-                    if (requestDto.getCommand() == FORWARD_PACKET &&
-                            requestDto.getData() instanceof VpnForwardPacketRequestDto vpnForwardPacketRequestDto) {
+                    if (requestDto.getCommand() == FORWARD_PACKET && requestDto.getData() instanceof VpnForwardPacketRequestDto vpnForwardPacketRequestDto) {
                         if (vpnForwardPacketRequestDto.getPacket().length > MAX_MTU) {
                             throw new IOException("Invalid packet length");
                         }
@@ -349,8 +314,7 @@ public class VpnClient {
                 }
 
                 default -> {
-                    // Unknown state, exit loop
-                    DebugLog.log("Unknown state: " + currentState);
+                    DebugLog.log("Unknown state: " + getState());
                     setState(DISCONNECTED);
                 }
             }
@@ -363,7 +327,7 @@ public class VpnClient {
         socket.setEnabledProtocols(new String[]{"TLSv1.3"});
         socket.setUseClientMode(true);
         socket.setKeepAlive(true);
-        socket.setSoTimeout(30 * 1000); // 30 second read timeout
+        socket.setSoTimeout(30 * 1000);
     }
 
     private void handleError() {
@@ -374,10 +338,6 @@ public class VpnClient {
         }
     }
 
-    /**
-     * Called by KeepAliveManager when connection is detected as dead.
-     * Triggers reconnection by setting error state.
-     */
     private void onKeepAliveFailed() {
         DebugLog.log("KeepAlive failed, triggering reconnection");
         synchronized (stateLock) {
@@ -385,8 +345,6 @@ public class VpnClient {
             state = DISCONNECTED;
         }
         onStateChange.accept(DISCONNECTED);
-
-        // Close the socket to unblock any waiting I/O
         closeConnection();
     }
 
@@ -400,9 +358,7 @@ public class VpnClient {
 
         try {
             synchronized (connectionLock) {
-                if (serverOutputStream != null) {
-                    objectMapper.serialize(packetDto, serverOutputStream);
-                }
+                objectMapper.serialize(packetDto, serverOutputStream);
             }
         } catch (RuntimeException | IOException ex) {
             DebugLog.log("Send error: " + ex.getMessage());
@@ -438,27 +394,21 @@ public class VpnClient {
             if (serverOutputStream != null) {
                 try {
                     serverOutputStream.close();
-                } catch (IOException e) {
-                    // Ignore
-                }
+                } catch (IOException ignored) {}
                 serverOutputStream = null;
             }
 
             if (serverInputStream != null) {
                 try {
                     serverInputStream.close();
-                } catch (IOException e) {
-                    // Ignore
-                }
+                } catch (IOException ignored) {}
                 serverInputStream = null;
             }
 
             if (socket != null) {
                 try {
                     socket.close();
-                } catch (IOException e) {
-                    // Ignore
-                }
+                } catch (IOException ignored) {}
                 socket = null;
             }
         }

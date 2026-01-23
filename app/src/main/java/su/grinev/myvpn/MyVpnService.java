@@ -112,7 +112,7 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
             case CONNECTED:
                 trafficStats.start();
                 break;
-            case DISCONNECTED:
+            case DISCONNECTED, SHUTDOWN:
                 trafficStats.stop();
                 if (!isSleeping) {
                     stopSelf();
