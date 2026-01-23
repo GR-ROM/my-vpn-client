@@ -40,6 +40,11 @@
     <string name="settings_error_required">Обязательное поле</string>
     <string name="settings_error_port">Порт должен быть от 1 до 65535</string>
 
+    <!-- Traffic -->
+    <string name="traffic_title">Статистика трафика</string>
+    <string name="incoming">Входящий</string>
+    <string name="outgoing">Исходящий</string>
+
     <!-- Validation messages -->
     <string name="validation_ip_empty">IP сервера не настроен</string>
     <string name="validation_ip_invalid">Неверный формат IP адреса</string>

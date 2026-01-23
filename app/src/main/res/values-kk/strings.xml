@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MyVPN</string>
+    <string name="action_settings">Параметрлер</string>
+
+    <!-- Button labels -->
+    <string name="btn_connect">Қосылу</string>
+    <string name="btn_disconnect">Ажырату</string>
+    <string name="btn_connecting">Қосылуда…</string>
+    <string name="btn_sleeping">Ұйқыда…</string>
+
+    <!-- Status messages -->
+    <string name="status_connected">Күй: ҚОСЫЛҒАН</string>
+    <string name="status_connecting">Күй: ҚОСЫЛУДА…</string>
+    <string name="status_disconnected">Күй: АЖЫРАТЫЛҒАН</string>
+    <string name="status_error">Күй: ҚАТЕ</string>
+    <string name="status_waiting">Күй: ҚАЙТА ҚОСЫЛУДЫ КҮТУДЕ</string>
+    <string name="status_sleeping">Күй: ҰЙҚЫДА</string>
+    <string name="status_unknown">Күй: БЕЛГІСІЗ</string>
+
+    <!-- Notification messages -->
+    <string name="notif_starting">Іске қосылуда…</string>
+    <string name="notif_connecting">Қосылуда…</string>
+    <string name="notif_connected">Қосылды</string>
+    <string name="notif_disconnected">Ажыратылды</string>
+    <string name="notif_sleeping">Ұйқыда…</string>
+    <string name="notif_reconnecting">Қайта қосылуда…</string>
+    <string name="notif_error">Қате</string>
+
+    <!-- Log placeholder -->
+    <string name="log_placeholder">Журналдар…</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Параметрлер</string>
+    <string name="settings_server_ip">Сервер IP</string>
+    <string name="settings_server_port">Сервер порты</string>
+    <string name="settings_jwt">JWT токен</string>
+    <string name="settings_save">Сақтау</string>
+    <string name="settings_saved">Параметрлер сақталды</string>
+    <string name="settings_error_required">Міндетті өріс</string>
+    <string name="settings_error_port">Порт 1-ден 65535-ке дейін болуы керек</string>
+
+    <!-- Traffic -->
+    <string name="traffic_title">Трафик статистикасы</string>
+    <string name="incoming">Кіріс</string>
+    <string name="outgoing">Шығыс</string>
+
+    <!-- Validation messages -->
+    <string name="validation_ip_empty">Сервер IP теңшелмеген</string>
+    <string name="validation_ip_invalid">IP мекенжай пішімі дұрыс емес</string>
+    <string name="validation_port_invalid">Порт нөмірі дұрыс емес</string>
+    <string name="validation_jwt_empty">JWT токен теңшелмеген</string>
+    <string name="validation_jwt_invalid">JWT токен пішімі дұрыс емес</string>
+</resources>
