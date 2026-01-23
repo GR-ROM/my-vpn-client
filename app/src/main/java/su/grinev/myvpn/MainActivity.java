@@ -137,7 +137,7 @@ public class MainActivity extends AppCompatActivity {
         currentState = state;
 
         switch (state) {
-            case CONNECTED:
+            case CONNECTED, LOGIN, AWAITING_LOGIN_RESPONSE, LIVE:
                 binding.connectButton.setText(R.string.btn_disconnect);
                 break;
             case CONNECTING:
@@ -154,7 +154,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         int statusResId = switch (state) {
-            case CONNECTED -> R.string.status_connected;
+            case CONNECTED, LOGIN, AWAITING_LOGIN_RESPONSE, LIVE -> R.string.status_connected;
             case CONNECTING -> R.string.status_connecting;
             case DISCONNECTED -> R.string.status_disconnected;
             case ERROR -> R.string.status_error;
