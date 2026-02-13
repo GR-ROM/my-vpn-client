@@ -1,7 +1,14 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(./gradlew.bat clean:*)",
+      "Bash(./gradlew.bat:*)",
+      "Bash(gradlew.bat assembleDebug:*)",
+      "Bash(cmd /c \"gradlew.bat assembleDebug\":*)",
+      "Bash(cmd.exe:*)",
+      "Bash(C:/Users/rgrin/AndroidStudioProjects/my-vpn-client/gradlew.bat assembleDebug)",
+      "Bash(C:/Users/rgrin/AndroidStudioProjects/my-vpn-client/gradlew.bat:*)"
     ]
   }
 }

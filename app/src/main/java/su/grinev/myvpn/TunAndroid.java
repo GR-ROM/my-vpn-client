@@ -24,13 +24,14 @@ public class TunAndroid implements Tun {
     }
 
     @Override
-    public void configureTun(String ip, boolean defaultRouteViaVpn) throws IOException {
+    public void configureTun(String ip, String gateway, boolean defaultRouteViaVpn) throws IOException {
         VpnService.Builder builder;
         try {
             builder = vpnService.new Builder()
                     .setSession("MyVPN")
                     .addDisallowedApplication(vpnService.getPackageName())
-                    .addAddress(ip, 24);
+                    .addAddress(ip, 24)
+                    .addDnsServer(gateway);
         } catch (PackageManager.NameNotFoundException e) {
             throw new RuntimeException(e);
         }

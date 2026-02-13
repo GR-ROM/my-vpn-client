@@ -21,6 +21,7 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
 import java.security.KeyManagementException;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
@@ -30,6 +31,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 import javax.net.ssl.SSLContext;
@@ -38,7 +40,7 @@ import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 
-import su.grinev.BsonMapper;
+import su.grinev.Codec;
 import su.grinev.model.Command;
 import su.grinev.model.Packet;
 import su.grinev.model.RequestDto;
@@ -47,17 +49,19 @@ import su.grinev.model.VpnForwardPacketRequestDto;
 import su.grinev.model.VpnIpResponseDto;
 import su.grinev.model.VpnLoginRequestDto;
 import su.grinev.myvpn.keepalive.KeepAliveManager;
+import su.grinev.pool.PoolFactory;
 
 public class VpnClient {
+    public static final int BUFFER_SIZE = 2048;
     private static final int TIMEOUT = 10;
     private final String serverAddress;
     private final int serverPort;
     private final String jwt;
-    private final BsonMapper objectMapper;
+    private final Codec codec;
     private final SSLContext sslContext;
     private final Consumer<byte[]> onClientPacketHandler;
     private final ExecutorService executor;
-    private final Consumer<String> onIpAssigned;
+    private final BiConsumer<String, String> onIpAssigned;
     private final Consumer<State> onStateChange;
     private final KeepAliveManager keepAliveManager;
     private final Set<State> reconnectableStates = Set.of(DISCONNECTED, WAITING);
@@ -77,7 +81,8 @@ public class VpnClient {
             int serverPort,
             String jwt,
             Consumer<byte[]> onClientPacket,
-            Consumer<String> onIpAssigned,
+            BiConsumer<String, String> onIpAssigned,
+            PoolFactory poolFactory,
             Consumer<State> onStateChange) throws IOException, InterruptedException {
         this.jwt = jwt;
         this.onClientPacketHandler = onClientPacket;
@@ -85,11 +90,11 @@ public class VpnClient {
         this.serverPort = serverPort;
         this.state = DISCONNECTED;
         this.onIpAssigned = onIpAssigned;
-        this.objectMapper = new BsonMapper(100, 1000, 4 * 1024, 64, null);
+        this.codec = Codec.messagePack(poolFactory, BUFFER_SIZE);
         this.onStateChange = onStateChange;
 
         // Initialize KeepAliveManager with callback for connection dead event
-        this.keepAliveManager = new KeepAliveManager(this, objectMapper, this::onKeepAliveFailed);
+        this.keepAliveManager = new KeepAliveManager(this, codec, this::onKeepAliveFailed);
 
         try {
             sslContext = SSLContext.getInstance("TLS");
@@ -171,14 +176,19 @@ public class VpnClient {
         }
 
         if (getState() == WAITING) {
+            boolean timeoutReset = false;
             synchronized (stateLock) {
                 if (timeout++ >= TIMEOUT) {
                     timeout = 0;
                     hasError = false;
                     state = DISCONNECTED;
-                    DebugLog.log("Retry timeout reset");
-                    return;
+                    timeoutReset = true;
                 }
+            }
+            if (timeoutReset) {
+                DebugLog.log("Retry timeout reset");
+                onStateChange.accept(DISCONNECTED);
+                return;
             }
             synchronized (this) {
                 this.wait(1000);
@@ -237,16 +247,13 @@ public class VpnClient {
                     RequestDto<VpnLoginRequestDto> requestDto = RequestDto.wrap(Command.LOGIN, VpnLoginRequestDto.builder().jwt(jwt).build());
                     Packet<RequestDto<?>> packet = Packet.ofRequest(requestDto);
                     synchronized (connectionLock) {
-                        objectMapper.serialize(packet, serverOutputStream);
+                        codec.serialize(packet, serverOutputStream);
                     }
                     DebugLog.log("Login request sent");
                     setState(AWAITING_LOGIN_RESPONSE);
                 }
                 case AWAITING_LOGIN_RESPONSE -> {
-                    Packet<?> packet;
-                    synchronized (connectionLock) {
-                        packet = objectMapper.deserialize(serverInputStream, Packet.class);
-                    }
+                    Packet<?> packet = readPacket(Packet.class);
                     ResponseDto<VpnIpResponseDto> responseDto = (ResponseDto<VpnIpResponseDto>) packet.getPayload();
 
                     if (responseDto.getStatus() == OK) {
@@ -259,10 +266,11 @@ public class VpnClient {
                             break;
                         }
                         assignedIp = intToIpv4(ipResponse.getIpAddress());
+                        String gatewayIp = intToIpv4(ipResponse.getGatewayIpAddress());
                         assignedIpBytes = ipv4ToIntBytes(assignedIp);
                         setState(LIVE);
                         DebugLog.log("Virtual IP: " + assignedIp);
-                        onIpAssigned.accept(assignedIp);
+                        onIpAssigned.accept(assignedIp, gatewayIp);
 
                         synchronized (connectionLock) {
                             keepAliveManager.start(serverOutputStream);
@@ -276,16 +284,14 @@ public class VpnClient {
                 }
 
                 case LIVE -> {
-                    DataInputStream inStream;
                     synchronized (connectionLock) {
-                        inStream = serverInputStream;
-                    }
-                    if (inStream == null) {
-                        setState(DISCONNECTED);
-                        break;
+                        if (serverInputStream == null) {
+                            setState(DISCONNECTED);
+                            break;
+                        }
                     }
 
-                    Packet<?> packet = objectMapper.deserialize(inStream, Packet.class);
+                    Packet<?> packet = readPacket(Packet.class);
                     keepAliveManager.onPacketReceived();
                     if (packet.getPayload() instanceof ResponseDto<?>) {
                         keepAliveManager.onPongReceived();
@@ -297,16 +303,19 @@ public class VpnClient {
                     if (requestDto.getCommand() == PING) {
                         Packet<ResponseDto<?>> response = Packet.ofResponse(ResponseDto.ofRequest(requestDto, OK));
                         synchronized (connectionLock) {
-                            objectMapper.serialize(response, serverOutputStream);
+                            codec.serialize(response, serverOutputStream);
                         }
                         continue;
                     }
 
                     if (requestDto.getCommand() == FORWARD_PACKET && requestDto.getData() instanceof VpnForwardPacketRequestDto vpnForwardPacketRequestDto) {
-                        if (vpnForwardPacketRequestDto.getPacket().length > MAX_MTU) {
+                        ByteBuffer buf = vpnForwardPacketRequestDto.getPacket();
+                        byte[] packetBytes = new byte[buf.remaining()];
+                        buf.get(packetBytes);
+                        if (packetBytes.length > MAX_MTU) {
                             throw new IOException("Invalid packet length");
                         }
-                        onClientPacketHandler.accept(vpnForwardPacketRequestDto.getPacket());
+                        onClientPacketHandler.accept(packetBytes);
                     } else if (requestDto.getCommand() == DISCONNECT) {
                         DebugLog.log("Server requested disconnect");
                         setState(DISCONNECTED);
@@ -319,6 +328,20 @@ public class VpnClient {
                 }
             }
         }
+    }
+
+    private <T> T readPacket(Class<T> tClass) throws IOException {
+        int packetSize = serverInputStream.readInt();
+        if (packetSize <= 4 || packetSize > 65536) {
+            throw new IOException("Invalid packet size: " + packetSize);
+        }
+        byte[] data = new byte[packetSize];
+        data[0] = (byte) (packetSize >> 24);
+        data[1] = (byte) (packetSize >> 16);
+        data[2] = (byte) (packetSize >> 8);
+        data[3] = (byte) packetSize;
+        serverInputStream.readFully(data, 4, packetSize - 4);
+        return codec.deserialize(ByteBuffer.wrap(data), tClass);
     }
 
     private void setupSocket(SSLSocket socket) throws IOException {
@@ -336,6 +359,7 @@ public class VpnClient {
             state = DISCONNECTED;
             hasError = true;
         }
+        onStateChange.accept(DISCONNECTED);
     }
 
     private void onKeepAliveFailed() {
@@ -353,12 +377,12 @@ public class VpnClient {
             return;
         }
 
-        RequestDto<VpnForwardPacketRequestDto> requestDto = RequestDto.wrap(FORWARD_PACKET, VpnForwardPacketRequestDto.builder().packet(packet).build());
+        RequestDto<VpnForwardPacketRequestDto> requestDto = RequestDto.wrap(FORWARD_PACKET, VpnForwardPacketRequestDto.builder().packet(ByteBuffer.wrap(packet)).build());
         Packet<RequestDto<?>> packetDto = Packet.ofRequest(requestDto);
 
         try {
             synchronized (connectionLock) {
-                objectMapper.serialize(packetDto, serverOutputStream);
+                codec.serialize(packetDto, serverOutputStream);
             }
         } catch (RuntimeException | IOException ex) {
             DebugLog.log("Send error: " + ex.getMessage());

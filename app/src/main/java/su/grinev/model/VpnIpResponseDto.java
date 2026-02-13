@@ -1,5 +1,6 @@
 package su.grinev.model;
 
+import annotation.Tag;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -12,6 +13,8 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 @EqualsAndHashCode(callSuper = false)
 public class VpnIpResponseDto {
+    @Tag(0)
     private int ipAddress;
+    @Tag(1)
     private int gatewayIpAddress;
 }

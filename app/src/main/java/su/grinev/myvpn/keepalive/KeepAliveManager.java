@@ -9,7 +9,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
-import su.grinev.BsonMapper;
+import su.grinev.Codec;
 import su.grinev.model.Command;
 import su.grinev.model.Packet;
 import su.grinev.model.RequestDto;
@@ -42,7 +42,7 @@ public class KeepAliveManager {
     private static final long CHECK_INTERVAL_MS = 1000; // Check every 1 second
 
     private final Object lock;
-    private final BsonMapper objectMapper;
+    private final Codec codec;
     private final KeepAliveCallback callback;
 
     private volatile DataOutputStream outputStream;
@@ -54,9 +54,9 @@ public class KeepAliveManager {
     private ScheduledExecutorService scheduler;
     private ScheduledFuture<?> checkTask;
 
-    public KeepAliveManager(Object lock, BsonMapper objectMapper, KeepAliveCallback callback) {
+    public KeepAliveManager(Object lock, Codec codec, KeepAliveCallback callback) {
         this.lock = lock;
-        this.objectMapper = objectMapper;
+        this.codec = codec;
         this.callback = callback;
     }
 
@@ -191,7 +191,7 @@ public class KeepAliveManager {
             Packet<RequestDto<?>> packet = Packet.ofRequest(pingRequest);
 
             synchronized (lock) {
-                objectMapper.serialize(packet, out);
+                codec.serialize(packet, out);
             }
 
             pingSentTime.set(System.currentTimeMillis());

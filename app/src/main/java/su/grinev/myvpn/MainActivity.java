@@ -16,22 +16,13 @@ import su.grinev.myvpn.settings.SettingsValidator;
 import su.grinev.myvpn.settings.SharedPreferencesSettingsProvider;
 import su.grinev.myvpn.state.VpnStateManager;
 
-/**
- * Main activity for VPN client.
- * Single Responsibility: Handle UI and user interactions.
- * Dependency Inversion: Depends on abstractions (SettingsProvider, VpnStateManager).
- */
 public class MainActivity extends AppCompatActivity {
 
     private ActivityMainBinding binding;
     private State currentState = State.DISCONNECTED;
-
-    // Dependencies
     private SettingsProvider settingsProvider;
     private SettingsValidator settingsValidator;
     private final VpnStateManager stateManager = VpnStateManager.getInstance();
-
-    // Keep a strong reference to the listener for proper unregistration
     private final Consumer<State> stateListener = this::updateUI;
 
     @Override
@@ -65,20 +56,17 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onStart() {
         super.onStart();
-        // Register with strong reference - callback is already posted to main thread by VpnStateManager
         stateManager.observeState(stateListener);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        // Sync UI with current state in case it changed while paused
         updateUI(stateManager.getState());
     }
 
     @Override
     protected void onStop() {
-        // Unregister using the same listener reference to ensure proper removal
         stateManager.unobserveState(stateListener);
         super.onStop();
     }
@@ -146,6 +134,9 @@ public class MainActivity extends AppCompatActivity {
             case SLEEPING:
                 binding.connectButton.setText(R.string.btn_sleeping);
                 break;
+            case WAITING:
+                binding.connectButton.setText(R.string.btn_connecting);
+                break;
             case DISCONNECTED:
             case ERROR:
             case SHUTDOWN:
@@ -156,11 +147,10 @@ public class MainActivity extends AppCompatActivity {
         int statusResId = switch (state) {
             case CONNECTED, LOGIN, AWAITING_LOGIN_RESPONSE, LIVE -> R.string.status_connected;
             case CONNECTING -> R.string.status_connecting;
-            case DISCONNECTED -> R.string.status_disconnected;
+            case DISCONNECTED, SHUTDOWN -> R.string.status_disconnected;
             case ERROR -> R.string.status_error;
             case WAITING -> R.string.status_waiting;
             case SLEEPING -> R.string.status_sleeping;
-            default -> R.string.status_unknown;
         };
         binding.statusText.setText(statusResId);
     }

@@ -1,10 +1,13 @@
 package su.grinev.myvpn;
 
+import static su.grinev.myvpn.VpnClient.BUFFER_SIZE;
+
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.function.Consumer;
 
 import su.grinev.myvpn.traffic.TrafficStatsManager;
+import su.grinev.pool.PoolFactory;
 
 public class VpnClientWrapper extends TunHandler {
     private final Tun tun;
@@ -18,21 +21,22 @@ public class VpnClientWrapper extends TunHandler {
             int serverPort,
             String jwt,
             boolean defaultRouteViaVpn,
+            PoolFactory poolFactory,
             Consumer<State> onStateChange
     ) throws IOException, InterruptedException {
-        super(tun, new BufferPool(1000, 4 * 1024));
+        super(tun, new BufferPool(1000, BUFFER_SIZE));
         this.tun = tun;
         this.defaultRouteViaVpn = defaultRouteViaVpn;
-        this.vpnClient = new VpnClient(serverAddress, serverPort, jwt, this::onClientPacketReceived, this::onIpAssigned, onStateChange);
+        this.vpnClient = new VpnClient(serverAddress, serverPort, jwt, this::onClientPacketReceived, this::onIpAssigned, poolFactory, onStateChange);
     }
 
-    private void onIpAssigned(String ip) {
+    private void onIpAssigned(String ip, String gatewayIp) {
         try {
-            tun.configureTun(ip, defaultRouteViaVpn);
+            tun.configureTun(ip, gatewayIp, defaultRouteViaVpn);
             if (!super.running) {
                 super.start();
             }
-        } catch (InterruptedException | IOException e) {
+        } catch (IOException | InterruptedException e) {
             throw new RuntimeException(e);
         }
     }

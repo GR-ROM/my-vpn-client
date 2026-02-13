@@ -16,6 +16,7 @@ import su.grinev.myvpn.settings.SettingsProvider;
 import su.grinev.myvpn.settings.SharedPreferencesSettingsProvider;
 import su.grinev.myvpn.state.VpnStateManager;
 import su.grinev.myvpn.traffic.TrafficStatsManager;
+import su.grinev.pool.PoolFactory;
 
 @SuppressLint("VpnServicePolicy")
 public class MyVpnService extends VpnService implements ScreenStateHandler.ScreenStateCallback {
@@ -32,6 +33,12 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
     private volatile boolean isConnecting = false;
     private boolean wasConnectedBeforeSleep = false;
     private boolean isSleeping = false;
+    private static final PoolFactory poolFactory = PoolFactory.Builder.builder()
+            .setMinPoolSize(100)
+            .setMaxPoolSize(1000)
+            .setBlocking(true)
+            .setOutOfPoolTimeout(100)
+            .build();
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
@@ -85,6 +92,7 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
                     settingsProvider.getServerPort(),
                     settingsProvider.getJwt(),
                     true,
+                    poolFactory,
                     this::onVpnStateChanged
             );
 

@@ -1,5 +1,8 @@
 package su.grinev.model;
 
+import java.nio.ByteBuffer;
+
+import annotation.Tag;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -13,7 +16,8 @@ import lombok.ToString;
 @ToString
 public class VpnForwardPacketRequestDto {
 
-    private byte[] packet;
+    @Tag(0)
+    private ByteBuffer packet;
 
 }
 

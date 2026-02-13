@@ -1,6 +1,7 @@
 package su.grinev.model;
 
 import annotation.BsonType;
+import annotation.Tag;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -11,9 +12,12 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class ResponseDto<T> {
+    @Tag(0)
     private int requestId;
+    @Tag(1)
     private Status status;
-    @BsonType(discriminator = "_dataType")
+    @Tag(2)
+    @BsonType(discriminator = 1488)
     private T data;
 
     public static <T> ResponseDto<T> wrap(Status status, T data) {

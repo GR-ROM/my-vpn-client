@@ -1,5 +1,6 @@
 package su.grinev.model;
 
+import annotation.Tag;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -13,6 +14,7 @@ import lombok.NoArgsConstructor;
 @EqualsAndHashCode(callSuper = false)
 public class VpnLoginRequestDto {
 
+    @Tag(0)
     private String jwt;
 
 }

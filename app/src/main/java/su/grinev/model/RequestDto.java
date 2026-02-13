@@ -1,6 +1,7 @@
 package su.grinev.model;
 
 import annotation.BsonType;
+import annotation.Tag;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -13,10 +14,14 @@ import lombok.ToString;
 @AllArgsConstructor
 @ToString
 public class RequestDto<T> {
+    @Tag(0)
     private int seq;
+    @Tag(1)
     private Command command;
+    @Tag(2)
     private boolean responseRequired;
-    @BsonType(discriminator = "_dataType")
+    @Tag(3)
+    @BsonType(discriminator = 1488)
     private T data;
 
     public static <T> RequestDto<T> wrap(Command command, T data) {
