@@ -112,23 +112,36 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
 
     /**
      * Callback from VpnClientWrapper when state changes.
+     * Note: DISCONNECTED from VpnClient is transient — it will auto-reconnect.
+     * We report it as WAITING so the UI shows "reconnecting" instead of "disconnected".
+     * The true DISCONNECTED state is only set by stopVpnSync when the service actually stops.
+     * Only SHUTDOWN (auth failure) and ERROR are terminal.
      */
     private void onVpnStateChanged(State state) {
-        updateState(state);
-
         switch (state) {
             case CONNECTED:
                 trafficStats.start();
+                updateState(state);
                 break;
-            case DISCONNECTED, SHUTDOWN:
+            case DISCONNECTED:
                 trafficStats.stop();
+                // VpnClient will auto-reconnect — show as WAITING, not DISCONNECTED.
+                updateState(State.WAITING);
+                break;
+            case SHUTDOWN:
+                trafficStats.stop();
+                updateState(state);
                 if (!isSleeping) {
-                    stopSelf();
+                    CompletableFuture.runAsync(this::stopVpnSync, executor);
                 }
                 break;
             case ERROR:
                 trafficStats.stop();
-                stopSelf();
+                updateState(state);
+                CompletableFuture.runAsync(this::stopVpnSync, executor);
+                break;
+            default:
+                updateState(state);
                 break;
         }
     }

@@ -17,4 +17,6 @@ public class VpnIpResponseDto {
     private int ipAddress;
     @Tag(1)
     private int gatewayIpAddress;
+    @Tag(2)
+    private int dnsServer;
 }

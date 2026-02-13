@@ -31,7 +31,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 import javax.net.ssl.SSLContext;
@@ -61,7 +60,7 @@ public class VpnClient {
     private final SSLContext sslContext;
     private final Consumer<byte[]> onClientPacketHandler;
     private final ExecutorService executor;
-    private final BiConsumer<String, String> onIpAssigned;
+    private final Consumer<VpnIpResponseDto> onIpAssigned;
     private final Consumer<State> onStateChange;
     private final KeepAliveManager keepAliveManager;
     private final Set<State> reconnectableStates = Set.of(DISCONNECTED, WAITING);
@@ -81,7 +80,7 @@ public class VpnClient {
             int serverPort,
             String jwt,
             Consumer<byte[]> onClientPacket,
-            BiConsumer<String, String> onIpAssigned,
+            Consumer<VpnIpResponseDto> onIpAssigned,
             PoolFactory poolFactory,
             Consumer<State> onStateChange) throws IOException, InterruptedException {
         this.jwt = jwt;
@@ -266,11 +265,10 @@ public class VpnClient {
                             break;
                         }
                         assignedIp = intToIpv4(ipResponse.getIpAddress());
-                        String gatewayIp = intToIpv4(ipResponse.getGatewayIpAddress());
                         assignedIpBytes = ipv4ToIntBytes(assignedIp);
                         setState(LIVE);
                         DebugLog.log("Virtual IP: " + assignedIp);
-                        onIpAssigned.accept(assignedIp, gatewayIp);
+                        onIpAssigned.accept(ipResponse);
 
                         synchronized (connectionLock) {
                             keepAliveManager.start(serverOutputStream);

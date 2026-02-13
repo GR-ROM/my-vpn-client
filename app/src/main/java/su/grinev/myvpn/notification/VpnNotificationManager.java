@@ -91,7 +91,7 @@ public class VpnNotificationManager {
         return switch (state) {
             case CONNECTING -> R.string.notif_connecting;
             case CONNECTED -> R.string.notif_connected;
-            case DISCONNECTED -> R.string.notif_disconnected;
+            case DISCONNECTED, WAITING -> R.string.notif_reconnecting;
             case SLEEPING -> R.string.notif_sleeping;
             case ERROR -> R.string.notif_error;
             default -> R.string.notif_starting;

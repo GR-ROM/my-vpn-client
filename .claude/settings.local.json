@@ -8,7 +8,8 @@
       "Bash(cmd /c \"gradlew.bat assembleDebug\":*)",
       "Bash(cmd.exe:*)",
       "Bash(C:/Users/rgrin/AndroidStudioProjects/my-vpn-client/gradlew.bat assembleDebug)",
-      "Bash(C:/Users/rgrin/AndroidStudioProjects/my-vpn-client/gradlew.bat:*)"
+      "Bash(C:/Users/rgrin/AndroidStudioProjects/my-vpn-client/gradlew.bat:*)",
+      "Bash(JAVA_HOME=\"C:\\\\Users\\\\rgrin\\\\.jdks\\\\temurin-23.0.2\" C:/Users/rgrin/AndroidStudioProjects/my-vpn-client/gradlew.bat:*)"
     ]
   }
 }

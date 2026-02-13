@@ -18,7 +18,6 @@ public class Packet<T> {
     private String ver;
     @Tag(1)
     private Instant timestamp;
-
     @Tag(2)
     @BsonType(discriminator = 1488)
     private T payload;

@@ -1,11 +1,13 @@
 package su.grinev.myvpn;
 
+import static su.grinev.myvpn.NetUtils.intToIpv4;
 import static su.grinev.myvpn.VpnClient.BUFFER_SIZE;
 
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.function.Consumer;
 
+import su.grinev.model.VpnIpResponseDto;
 import su.grinev.myvpn.traffic.TrafficStatsManager;
 import su.grinev.pool.PoolFactory;
 
@@ -30,9 +32,14 @@ public class VpnClientWrapper extends TunHandler {
         this.vpnClient = new VpnClient(serverAddress, serverPort, jwt, this::onClientPacketReceived, this::onIpAssigned, poolFactory, onStateChange);
     }
 
-    private void onIpAssigned(String ip, String gatewayIp) {
+    private void onIpAssigned(VpnIpResponseDto vpnIpResponseDto) {
         try {
-            tun.configureTun(ip, gatewayIp, defaultRouteViaVpn);
+            tun.configureTun(
+                    intToIpv4(vpnIpResponseDto.getIpAddress()),
+                    intToIpv4(vpnIpResponseDto.getGatewayIpAddress()),
+                    intToIpv4(vpnIpResponseDto.getDnsServer()),
+                    defaultRouteViaVpn
+            );
             if (!super.running) {
                 super.start();
             }

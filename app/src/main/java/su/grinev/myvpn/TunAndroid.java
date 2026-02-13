@@ -24,7 +24,7 @@ public class TunAndroid implements Tun {
     }
 
     @Override
-    public void configureTun(String ip, String gateway, boolean defaultRouteViaVpn) throws IOException {
+    public void configureTun(String ip, String gateway, String dnsServer, boolean defaultRouteViaVpn) throws IOException {
         VpnService.Builder builder;
         try {
             builder = vpnService.new Builder()
