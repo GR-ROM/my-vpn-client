@@ -1,7 +1,7 @@
 package su.grinev.model;
 
-import annotation.BsonType;
 import annotation.Tag;
+import annotation.Type;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -21,7 +21,7 @@ public class RequestDto<T> {
     @Tag(2)
     private boolean responseRequired;
     @Tag(3)
-    @BsonType(discriminator = 1488)
+    @Type(discriminator = 1488)
     private T data;
 
     public static <T> RequestDto<T> wrap(Command command, T data) {

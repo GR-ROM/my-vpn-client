@@ -12,7 +12,7 @@ android {
         targetSdk = 34
 
         versionCode = 2
-        versionName = "0.4.2"
+        versionName = "0.4.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -37,7 +37,7 @@ android {
 }
 
 dependencies {
-    implementation("com.github.GR-ROM:JBson:v0.4.2")
+    implementation("su.grinev:jbson:0.5.2")
     compileOnly("org.projectlombok:lombok:1.18.30")
     annotationProcessor("org.projectlombok:lombok:1.18.30")
     implementation(libs.appcompat)

@@ -17,6 +17,8 @@ import static su.grinev.myvpn.State.SHUTDOWN;
 import static su.grinev.myvpn.State.WAITING;
 import static su.grinev.myvpn.TunHandler.MAX_MTU;
 
+import android.annotation.SuppressLint;
+
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -39,6 +41,7 @@ import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 
+import su.grinev.Binder;
 import su.grinev.Codec;
 import su.grinev.model.Command;
 import su.grinev.model.Packet;
@@ -89,10 +92,9 @@ public class VpnClient {
         this.serverPort = serverPort;
         this.state = DISCONNECTED;
         this.onIpAssigned = onIpAssigned;
-        this.codec = Codec.messagePack(poolFactory, BUFFER_SIZE);
+        this.codec = Codec.messagePack(poolFactory, BUFFER_SIZE, Binder.ClassNameMode.SIMPLE_NAME);
         this.onStateChange = onStateChange;
 
-        // Initialize KeepAliveManager with callback for connection dead event
         this.keepAliveManager = new KeepAliveManager(this, codec, this::onKeepAliveFailed);
 
         try {
@@ -100,7 +102,7 @@ public class VpnClient {
         } catch (NoSuchAlgorithmException e) {
             throw new RuntimeException(e);
         }
-        TrustManager[] trustAllCerts = new TrustManager[]{
+        @SuppressLint("CustomX509TrustManager") TrustManager[] trustAllCerts = new TrustManager[]{
                 new X509TrustManager() {
                     public X509Certificate[] getAcceptedIssuers() {
                         return null;
@@ -343,7 +345,7 @@ public class VpnClient {
     }
 
     private void setupSocket(SSLSocket socket) throws IOException {
-        socket.setTcpNoDelay(false);
+        socket.setTcpNoDelay(true);
         socket.connect(new InetSocketAddress(serverAddress, serverPort));
         socket.setEnabledProtocols(new String[]{"TLSv1.3"});
         socket.setUseClientMode(true);

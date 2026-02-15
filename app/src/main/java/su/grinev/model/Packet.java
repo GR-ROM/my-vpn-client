@@ -1,13 +1,13 @@
 package su.grinev.model;
 
-import java.time.Instant;
-
-import annotation.BsonType;
 import annotation.Tag;
+import annotation.Type;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+
+import java.time.Instant;
 
 @Data
 @Builder
@@ -19,7 +19,7 @@ public class Packet<T> {
     @Tag(1)
     private Instant timestamp;
     @Tag(2)
-    @BsonType(discriminator = 1488)
+    @Type(discriminator = 1488)
     private T payload;
 
     public static Packet<RequestDto<?>> ofRequest(RequestDto<?> requestDto) {
