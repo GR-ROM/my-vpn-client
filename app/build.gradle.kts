@@ -2,22 +2,29 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
+val appVersion = "0.5.3"
+val buildNumberFile = file("build-number.txt")
+val buildNumber = if (buildNumberFile.exists()) buildNumberFile.readText().trim().toInt() else 0
+
 android {
     namespace = "su.grinev.myvpn"
     compileSdk = 36
 
     defaultConfig {
         applicationId = "su.grinev.myvpn"
-        minSdk = 33
+        minSdk = 29
         targetSdk = 34
 
-        versionCode = 2
-        versionName = "0.4.3"
+        versionCode = buildNumber
+        versionName = appVersion
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
+        debug {
+            versionNameSuffix = "-snapshot.$buildNumber"
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
@@ -36,8 +43,20 @@ android {
     }
 }
 
+tasks.register("incrementBuildNumber") {
+    doLast {
+        val current = if (buildNumberFile.exists()) buildNumberFile.readText().trim().toInt() else 0
+        buildNumberFile.writeText((current + 1).toString())
+        println("Build number incremented to ${current + 1}")
+    }
+}
+
+tasks.matching { it.name == "assembleDebug" }.configureEach {
+    dependsOn("incrementBuildNumber")
+}
+
 dependencies {
-    implementation("su.grinev:jbson:0.5.2")
+    implementation("su.grinev:jbson:0.5.3-compat")
     compileOnly("org.projectlombok:lombok:1.18.30")
     annotationProcessor("org.projectlombok:lombok:1.18.30")
     implementation(libs.appcompat)

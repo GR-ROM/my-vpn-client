@@ -23,11 +23,14 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
 import java.security.KeyManagementException;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
+import java.time.Instant;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -55,16 +58,18 @@ import su.grinev.pool.PoolFactory;
 
 public class VpnClient {
     public static final int BUFFER_SIZE = 2048;
+    private static final int MAX_PACKET_SIZE = 65536;
     private static final int TIMEOUT = 10;
     private final String serverAddress;
     private final int serverPort;
     private final String jwt;
     private final Codec codec;
     private final SSLContext sslContext;
-    private final Consumer<byte[]> onClientPacketHandler;
+    private final Consumer<ByteBuffer> onClientPacketHandler;
     private final ExecutorService executor;
     private final Consumer<VpnIpResponseDto> onIpAssigned;
     private final Consumer<State> onStateChange;
+    private final Consumer<java.net.Socket> socketProtector;
     private final KeepAliveManager keepAliveManager;
     private final Set<State> reconnectableStates = Set.of(DISCONNECTED, WAITING);
     private final Object stateLock = new Object();
@@ -75,27 +80,44 @@ public class VpnClient {
     private DataOutputStream serverOutputStream;
     private DataInputStream serverInputStream;
     private SSLSocket socket;
+    private Socket rawSocket;
     public volatile String assignedIp;
     public volatile byte[] assignedIpBytes;
+
+    // Pre-allocated for send hot path (single-threaded: TunHandler reader thread only)
+    private final VpnForwardPacketRequestDto sendForwardDto = new VpnForwardPacketRequestDto();
+    private final RequestDto<VpnForwardPacketRequestDto> sendRequestDto = new RequestDto<>();
+    private final Packet<RequestDto<?>> sendPacketDto = new Packet<>();
+
+    // Pre-allocated read buffer (single-threaded: VpnClientWorker thread only)
+    private final byte[] readBuffer = new byte[MAX_PACKET_SIZE];
 
     public VpnClient(
             String serverAddress,
             int serverPort,
             String jwt,
-            Consumer<byte[]> onClientPacket,
+            Consumer<ByteBuffer> onClientPacket,
             Consumer<VpnIpResponseDto> onIpAssigned,
             PoolFactory poolFactory,
-            Consumer<State> onStateChange) throws IOException, InterruptedException {
+            Consumer<State> onStateChange,
+            Consumer<java.net.Socket> socketProtector) throws IOException, InterruptedException {
         this.jwt = jwt;
         this.onClientPacketHandler = onClientPacket;
         this.serverAddress = serverAddress;
         this.serverPort = serverPort;
         this.state = DISCONNECTED;
         this.onIpAssigned = onIpAssigned;
+        this.socketProtector = socketProtector;
         this.codec = Codec.messagePack(poolFactory, BUFFER_SIZE, Binder.ClassNameMode.SIMPLE_NAME);
         this.onStateChange = onStateChange;
 
         this.keepAliveManager = new KeepAliveManager(this, codec, this::onKeepAliveFailed);
+
+        // Wire up pre-allocated send wrappers
+        sendRequestDto.setCommand(FORWARD_PACKET);
+        sendRequestDto.setData(sendForwardDto);
+        sendPacketDto.setVer("0.1");
+        sendPacketDto.setPayload(sendRequestDto);
 
         try {
             sslContext = SSLContext.getInstance("TLS");
@@ -151,7 +173,7 @@ public class VpnClient {
         synchronized (stateLock) {
             state = newState;
         }
-        onStateChange.accept(state);
+        onStateChange.accept(newState);
     }
 
     private void setError(boolean error) {
@@ -206,9 +228,23 @@ public class VpnClient {
             try {
                 SSLSocketFactory factory = sslContext.getSocketFactory();
                 DebugLog.log("Connecting to " + serverAddress + ":" + serverPort);
-                sslSocket = (SSLSocket) factory.createSocket();
-                setupSocket(sslSocket);
+
+                // Create raw socket first and protect it BEFORE wrapping with SSL.
+                // On Android 10, protect(SSLSocket) may not protect the underlying socket.
+                rawSocket = new Socket();
+                socketProtector.accept(rawSocket);
+                DebugLog.log("Raw socket protected from VPN routing (pre-tunnel)");
+                rawSocket.setTcpNoDelay(true);
+                rawSocket.setKeepAlive(true);
+                rawSocket.connect(new InetSocketAddress(serverAddress, serverPort));
+                DebugLog.log("Raw socket connected");
+
+                sslSocket = (SSLSocket) factory.createSocket(rawSocket, serverAddress, serverPort, true);
+                sslSocket.setEnabledProtocols(new String[]{"TLSv1.3"});
+                sslSocket.setUseClientMode(true);
+                sslSocket.setSoTimeout(30 * 1000);
                 sslSocket.startHandshake();
+                DebugLog.log("TLS handshake complete");
 
                 outStream = new DataOutputStream(sslSocket.getOutputStream());
                 inStream = new DataInputStream(sslSocket.getInputStream());
@@ -224,10 +260,12 @@ public class VpnClient {
                 onStateChange.accept(CONNECTED);
 
                 runProtocolLoop();
-            } catch (RuntimeException | IOException e) {
-                DebugLog.log("Connection error: " + e.getMessage());
+            } catch (Throwable e) {
+                DebugLog.log("[ERROR] Connection error: " + e.getClass().getName() + ": " + e.getMessage()
+                        + "\n" + android.util.Log.getStackTraceString(e));
                 handleError();
             } finally {
+                DebugLog.log("[FINALLY] entering finally block, state=" + getState());
                 keepAliveManager.stop();
                 closeConnection();
                 DebugLog.log("Connection closed");
@@ -236,7 +274,9 @@ public class VpnClient {
     }
 
     private void runProtocolLoop() throws IOException {
+        DebugLog.log("[PROTO] runProtocolLoop entry, state=" + getState());
         if (serverInputStream == null || serverOutputStream == null) {
+            DebugLog.log("[PROTO] streams null on entry, aborting");
             setError(true);
             setState(ERROR);
             return;
@@ -254,29 +294,45 @@ public class VpnClient {
                     setState(AWAITING_LOGIN_RESPONSE);
                 }
                 case AWAITING_LOGIN_RESPONSE -> {
+                    DebugLog.log("[AUTH] Reading login response...");
                     Packet<?> packet = readPacket(Packet.class);
+                    DebugLog.log("[AUTH] Login response received");
                     ResponseDto<VpnIpResponseDto> responseDto = (ResponseDto<VpnIpResponseDto>) packet.getPayload();
 
                     if (responseDto.getStatus() == OK) {
-                        DebugLog.log("Authenticated");
+                        DebugLog.log("[AUTH] Authenticated OK");
                         VpnIpResponseDto ipResponse = responseDto.getData();
                         if (ipResponse == null) {
-                            DebugLog.log("No IP data in response");
+                            DebugLog.log("[AUTH] No IP data in response");
                             setError(true);
                             setState(DISCONNECTED);
                             break;
                         }
                         assignedIp = intToIpv4(ipResponse.getIpAddress());
                         assignedIpBytes = ipv4ToIntBytes(assignedIp);
-                        setState(LIVE);
-                        DebugLog.log("Virtual IP: " + assignedIp);
-                        onIpAssigned.accept(ipResponse);
+                        DebugLog.log("[AUTH] Virtual IP: " + assignedIp);
 
+                        DebugLog.log("[AUTH] Setting state LIVE");
+                        setState(LIVE);
+
+                        DebugLog.log("[AUTH] Calling onIpAssigned (configureTun + TunHandler.start)...");
+                        onIpAssigned.accept(ipResponse);
+                        DebugLog.log("[AUTH] onIpAssigned returned");
+
+                        DebugLog.log("[AUTH] State after onIpAssigned: " + getState());
                         synchronized (connectionLock) {
+                            DebugLog.log("[AUTH] serverOutputStream=" + (serverOutputStream != null ? "OK" : "NULL")
+                                    + ", serverInputStream=" + (serverInputStream != null ? "OK" : "NULL")
+                                    + ", socket=" + (socket != null ? (socket.isClosed() ? "CLOSED" : "OK") : "NULL"));
+                            if (serverOutputStream == null) {
+                                DebugLog.log("[AUTH] serverOutputStream is NULL, cannot start KeepAlive!");
+                                break;
+                            }
                             keepAliveManager.start(serverOutputStream);
                         }
+                        DebugLog.log("[AUTH] KeepAlive started, entering LIVE loop. State=" + getState());
                     } else {
-                        DebugLog.log("Auth failed: " + responseDto.getStatus().name());
+                        DebugLog.log("[AUTH] Auth failed: " + responseDto.getStatus().name());
                         setError(true);
                         setState(SHUTDOWN);
                         return;
@@ -286,12 +342,20 @@ public class VpnClient {
                 case LIVE -> {
                     synchronized (connectionLock) {
                         if (serverInputStream == null) {
+                            DebugLog.log("[LIVE] serverInputStream is NULL, disconnecting");
                             setState(DISCONNECTED);
                             break;
                         }
                     }
 
-                    Packet<?> packet = readPacket(Packet.class);
+                    Packet<?> packet;
+                    try {
+                        packet = readPacket(Packet.class);
+                    } catch (SocketTimeoutException e) {
+                        // Socket timeout is benign in LIVE state — KeepAlive handles
+                        // dead connection detection. During sleep, no data is expected.
+                        continue;
+                    }
                     keepAliveManager.onPacketReceived();
                     if (packet.getPayload() instanceof ResponseDto<?>) {
                         keepAliveManager.onPongReceived();
@@ -310,52 +374,44 @@ public class VpnClient {
 
                     if (requestDto.getCommand() == FORWARD_PACKET && requestDto.getData() instanceof VpnForwardPacketRequestDto vpnForwardPacketRequestDto) {
                         ByteBuffer buf = vpnForwardPacketRequestDto.getPacket();
-                        byte[] packetBytes = new byte[buf.remaining()];
-                        buf.get(packetBytes);
-                        if (packetBytes.length > MAX_MTU) {
+                        if (buf.remaining() > MAX_MTU) {
                             throw new IOException("Invalid packet length");
                         }
-                        onClientPacketHandler.accept(packetBytes);
+                        onClientPacketHandler.accept(buf);
                     } else if (requestDto.getCommand() == DISCONNECT) {
-                        DebugLog.log("Server requested disconnect");
+                        DebugLog.log("[LIVE] Server requested disconnect");
                         setState(DISCONNECTED);
                     }
                 }
 
                 default -> {
-                    DebugLog.log("Unknown state: " + getState());
+                    DebugLog.log("[PROTO] Unknown state: " + getState());
                     setState(DISCONNECTED);
                 }
             }
         }
+        DebugLog.log("[PROTO] Loop exited, state=" + getState());
     }
 
     private <T> T readPacket(Class<T> tClass) throws IOException {
         int packetSize = serverInputStream.readInt();
-        if (packetSize <= 4 || packetSize > 65536) {
+        if (packetSize <= 4 || packetSize > MAX_PACKET_SIZE) {
             throw new IOException("Invalid packet size: " + packetSize);
         }
-        byte[] data = new byte[packetSize];
-        data[0] = (byte) (packetSize >> 24);
-        data[1] = (byte) (packetSize >> 16);
-        data[2] = (byte) (packetSize >> 8);
-        data[3] = (byte) packetSize;
-        serverInputStream.readFully(data, 4, packetSize - 4);
-        return codec.deserialize(ByteBuffer.wrap(data), tClass);
-    }
-
-    private void setupSocket(SSLSocket socket) throws IOException {
-        socket.setTcpNoDelay(true);
-        socket.connect(new InetSocketAddress(serverAddress, serverPort));
-        socket.setEnabledProtocols(new String[]{"TLSv1.3"});
-        socket.setUseClientMode(true);
-        socket.setKeepAlive(true);
-        socket.setSoTimeout(30 * 1000);
+        readBuffer[0] = (byte) (packetSize >> 24);
+        readBuffer[1] = (byte) (packetSize >> 16);
+        readBuffer[2] = (byte) (packetSize >> 8);
+        readBuffer[3] = (byte) packetSize;
+        serverInputStream.readFully(readBuffer, 4, packetSize - 4);
+        return codec.deserialize(ByteBuffer.wrap(readBuffer, 0, packetSize), tClass);
     }
 
     private void handleError() {
+        DebugLog.log("handleError called from: " + Thread.currentThread().getName()
+                + "\n" + android.util.Log.getStackTraceString(new Throwable("handleError trace")));
         keepAliveManager.stop();
         synchronized (stateLock) {
+            if (state == SHUTDOWN) return;
             state = DISCONNECTED;
             hasError = true;
         }
@@ -365,6 +421,7 @@ public class VpnClient {
     private void onKeepAliveFailed() {
         DebugLog.log("KeepAlive failed, triggering reconnection");
         synchronized (stateLock) {
+            if (state == SHUTDOWN) return;
             hasError = true;
             state = DISCONNECTED;
         }
@@ -372,20 +429,21 @@ public class VpnClient {
         closeConnection();
     }
 
-    public void sendToServer(byte[] packet) {
+    public void sendToServer(ByteBuffer packet) {
         if (getState() != LIVE) {
             return;
         }
 
-        RequestDto<VpnForwardPacketRequestDto> requestDto = RequestDto.wrap(FORWARD_PACKET, VpnForwardPacketRequestDto.builder().packet(ByteBuffer.wrap(packet)).build());
-        Packet<RequestDto<?>> packetDto = Packet.ofRequest(requestDto);
+        sendForwardDto.setPacket(packet);
+        sendPacketDto.setTimestamp(Instant.now());
 
         try {
             synchronized (connectionLock) {
-                codec.serialize(packetDto, serverOutputStream);
+                codec.serialize(sendPacketDto, serverOutputStream);
             }
         } catch (RuntimeException | IOException ex) {
-            DebugLog.log("Send error: " + ex.getMessage());
+            DebugLog.log("Send error: " + ex.getClass().getName() + ": " + ex.getMessage()
+                    + "\n" + android.util.Log.getStackTraceString(ex));
             handleError();
         }
     }
@@ -407,6 +465,29 @@ public class VpnClient {
         }
     }
 
+    public void pauseKeepAlive() {
+        keepAliveManager.stop();
+        DebugLog.log("KeepAlive paused for sleep");
+    }
+
+    public void resumeKeepAlive() {
+        synchronized (connectionLock) {
+            if (serverOutputStream != null && getState() == LIVE) {
+                keepAliveManager.start(serverOutputStream);
+                DebugLog.log("KeepAlive resumed after sleep");
+            }
+        }
+    }
+
+    public void reprotectSocket() {
+        synchronized (connectionLock) {
+            if (rawSocket != null && !rawSocket.isClosed()) {
+                socketProtector.accept(rawSocket);
+                DebugLog.log("Raw socket re-protected (post-tunnel)");
+            }
+        }
+    }
+
     public boolean isSocketConnected() {
         synchronized (connectionLock) {
             return socket != null && socket.isConnected() && !socket.isClosed();
@@ -414,6 +495,7 @@ public class VpnClient {
     }
 
     private void closeConnection() {
+        DebugLog.log("[CLOSE] closeConnection called from " + Thread.currentThread().getName());
         synchronized (connectionLock) {
             if (serverOutputStream != null) {
                 try {
@@ -435,6 +517,7 @@ public class VpnClient {
                 } catch (IOException ignored) {}
                 socket = null;
             }
+            rawSocket = null;
         }
     }
 }

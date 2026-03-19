@@ -7,8 +7,11 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 
+import android.os.Build;
+
 import androidx.core.app.NotificationCompat;
 
+import su.grinev.myvpn.DebugLog;
 import su.grinev.myvpn.MainActivity;
 import su.grinev.myvpn.R;
 import su.grinev.myvpn.State;
@@ -90,11 +93,11 @@ public class VpnNotificationManager {
     public int getNotificationTextForState(State state) {
         return switch (state) {
             case CONNECTING -> R.string.notif_connecting;
-            case CONNECTED -> R.string.notif_connected;
-            case DISCONNECTED, WAITING -> R.string.notif_reconnecting;
+            case CONNECTED, LOGIN, AWAITING_LOGIN_RESPONSE, LIVE -> R.string.notif_connected;
+            case WAITING -> R.string.notif_reconnecting;
             case SLEEPING -> R.string.notif_sleeping;
             case ERROR -> R.string.notif_error;
-            default -> R.string.notif_starting;
+            case DISCONNECTED, SHUTDOWN -> R.string.notif_disconnected;
         };
     }
 
@@ -105,14 +108,29 @@ public class VpnNotificationManager {
         updateNotification(getNotificationTextForState(state));
     }
 
-    private void createNotificationChannel() {
-        NotificationChannel channel = new NotificationChannel(
-                CHANNEL_ID,
-                "VPN",
-                NotificationManager.IMPORTANCE_LOW
-        );
-        if (notificationManager != null) {
-            notificationManager.createNotificationChannel(channel);
+    /**
+     * Ensure the notification channel exists before starting the foreground service.
+     * Safe to call multiple times — createNotificationChannel is idempotent.
+     * Call this from the Activity BEFORE startForegroundService() to avoid
+     * EMUI race conditions where the channel isn't registered in time.
+     */
+    public static void ensureChannelExists(Context context) {
+        DebugLog.log("ensureChannelExists: SDK=" + Build.VERSION.SDK_INT);
+        NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm != null) {
+            NotificationChannel channel = new NotificationChannel(
+                    CHANNEL_ID,
+                    "VPN",
+                    NotificationManager.IMPORTANCE_LOW
+            );
+            nm.createNotificationChannel(channel);
+            DebugLog.log("ensureChannelExists: channel created/updated OK");
+        } else {
+            DebugLog.log("ensureChannelExists: WARNING NotificationManager is null!");
         }
+    }
+
+    private void createNotificationChannel() {
+        ensureChannelExists(context);
     }
 }

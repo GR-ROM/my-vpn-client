@@ -1,7 +1,9 @@
 package su.grinev.myvpn;
 
 import java.io.IOException;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.nio.ByteBuffer;
+
+import su.grinev.pool.FastPool;
 
 public abstract class TunHandler {
     public static final int MAX_MTU = 4 * 1024;
@@ -9,25 +11,25 @@ public abstract class TunHandler {
     protected volatile boolean running = false;
     protected final Tun tun;
     protected final Thread readerThread = new Thread(this::handleTunPackets);
-    protected final BufferPool bufferPool;
+    protected final FastPool<ByteBuffer> bufferPool;
 
-    public TunHandler(Tun tun, BufferPool bufferPool) {
+    public TunHandler(Tun tun, FastPool<ByteBuffer> bufferPool) {
         this.tun = tun;
         this.bufferPool = bufferPool;
     }
 
     private void handleTunPackets() {
-        AtomicInteger bytesRead = new AtomicInteger(0);
         try {
             while (!stop) {
-                byte[] packet = bufferPool.getBuffer();
+                ByteBuffer buf = bufferPool.get();
                 try {
-                    tun.readPacket(packet, bytesRead);
-                    if (bytesRead.get() > 20) {
-                        onTunPacketReceived(packet, bytesRead.get());
+                    int bytesRead = tun.readPacket(buf);
+                    if (bytesRead > 20) {
+                        buf.flip();
+                        onTunPacketReceived(buf);
                     }
                 } finally {
-                    bufferPool.release(packet);
+                    bufferPool.release(buf);
                 }
             }
         } catch (IOException ioException) {
@@ -35,16 +37,7 @@ public abstract class TunHandler {
         }
     }
 
-    public abstract void onTunPacketReceived(byte[] packet, int bytesRead);
-
-    private String getProtocolName(int protocol) {
-        return switch (protocol) {
-            case 1 -> "ICMP";
-            case 6 -> "TCP";
-            case 17 -> "UDP";
-            default -> "Unknown";
-        };
-    }
+    public abstract void onTunPacketReceived(ByteBuffer packet);
 
     protected synchronized void start() {
         readerThread.start();

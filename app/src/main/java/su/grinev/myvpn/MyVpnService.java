@@ -2,7 +2,9 @@ package su.grinev.myvpn;
 
 import android.annotation.SuppressLint;
 import android.content.Intent;
+import android.content.pm.ServiceInfo;
 import android.net.VpnService;
+import android.os.Build;
 import android.util.Log;
 
 import java.util.concurrent.CompletableFuture;
@@ -25,34 +27,99 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
     private SettingsProvider settingsProvider;
     private VpnNotificationManager notificationManager;
     private ScreenStateHandler screenStateHandler;
-    private final VpnStateManager stateManager = VpnStateManager.getInstance();
-    private final TrafficStatsManager trafficStats = TrafficStatsManager.getInstance();
+    private VpnStateManager stateManager;
+    private TrafficStatsManager trafficStats;
     private final Object vpnLock = new Object();
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private VpnClientWrapper vpnClientWrapper;
     private volatile boolean isConnecting = false;
+    private volatile boolean isStopping = false;
     private boolean wasConnectedBeforeSleep = false;
     private boolean isSleeping = false;
-    private static final PoolFactory poolFactory = PoolFactory.Builder.builder()
-            .setMinPoolSize(100)
-            .setMaxPoolSize(1000)
-            .setBlocking(true)
-            .setOutOfPoolTimeout(100)
-            .build();
+    private static volatile PoolFactory poolFactory;
+
+    private static PoolFactory getPoolFactory() {
+        if (poolFactory == null) {
+            synchronized (MyVpnService.class) {
+                if (poolFactory == null) {
+                    DebugLog.log("getPoolFactory: creating PoolFactory");
+                    poolFactory = PoolFactory.Builder.builder()
+                            .setMinPoolSize(100)
+                            .setMaxPoolSize(1000)
+                            .setBlocking(true)
+                            .setOutOfPoolTimeout(100)
+                            .build();
+                    DebugLog.log("getPoolFactory: OK");
+                }
+            }
+        }
+        return poolFactory;
+    }
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        Log.d("MyVPN", "onCreate: entry, SDK=" + Build.VERSION.SDK_INT
+                + " (" + Build.VERSION.RELEASE + "), device=" + Build.MANUFACTURER + " " + Build.MODEL);
+
+        try {
+            stateManager = VpnStateManager.getInstance();
+            trafficStats = TrafficStatsManager.getInstance();
+        } catch (Exception e) {
+            Log.e("MyVPN", "onCreate: singleton init failed", e);
+        }
+
+        // Call startForeground ASAP to avoid ForegroundServiceDidNotStartInTimeException
+        try {
+            notificationManager = new VpnNotificationManager(this, ACTION_DISCONNECT, MyVpnService.class);
+            android.app.Notification notification = notificationManager.buildNotification(R.string.notif_starting);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                Log.d("MyVPN", "onCreate: startForeground with FOREGROUND_SERVICE_TYPE_SPECIAL_USE");
+                startForeground(VpnNotificationManager.getNotificationId(),
+                        notification,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+            } else {
+                Log.d("MyVPN", "onCreate: startForeground (legacy, no type)");
+                startForeground(VpnNotificationManager.getNotificationId(), notification);
+            }
+            Log.d("MyVPN", "onCreate: startForeground OK");
+        } catch (Exception e) {
+            Log.e("MyVPN", "onCreate: startForeground FAILED", e);
+        }
+    }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        initializeDependencies();
+        DebugLog.log("onStartCommand: entry, SDK=" + Build.VERSION.SDK_INT
+                + " (" + Build.VERSION.RELEASE + "), device=" + Build.MANUFACTURER + " " + Build.MODEL);
+        DebugLog.log("onStartCommand: intent=" + intent
+                + ", action=" + (intent != null ? intent.getAction() : "null")
+                + ", flags=" + flags + ", startId=" + startId);
 
-        startForeground(VpnNotificationManager.getNotificationId(), notificationManager.buildNotification(R.string.notif_starting));
+        try {
+            DebugLog.log("onStartCommand: initializing dependencies");
+            initializeDependencies();
+            DebugLog.log("onStartCommand: dependencies initialized OK");
+        } catch (Exception e) {
+            DebugLog.log("onStartCommand: initializeDependencies FAILED: " + Log.getStackTraceString(e));
+            stopSelf();
+            return START_NOT_STICKY;
+        }
 
         if (intent != null && ACTION_DISCONNECT.equals(intent.getAction())) {
+            DebugLog.log("onStartCommand: DISCONNECT action received");
             wasConnectedBeforeSleep = false;
             CompletableFuture.runAsync(this::stopVpnSync, executor);
             return START_NOT_STICKY;
         }
 
-        screenStateHandler.register();
+        try {
+            DebugLog.log("onStartCommand: registering screen state handler");
+            screenStateHandler.register();
+            DebugLog.log("onStartCommand: screen state handler registered OK");
+        } catch (Exception e) {
+            DebugLog.log("onStartCommand: screenStateHandler.register FAILED: " + Log.getStackTraceString(e));
+        }
 
         DebugLog.log("VPN service started");
         DebugLog.log("Server: " + settingsProvider.getServerIp() + ":" + settingsProvider.getServerPort());
@@ -63,38 +130,52 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
 
     private void initializeDependencies() {
         if (settingsProvider == null) {
+            DebugLog.log("initDeps: creating SharedPreferencesSettingsProvider");
             settingsProvider = new SharedPreferencesSettingsProvider(this);
+            DebugLog.log("initDeps: settingsProvider OK");
         }
         if (notificationManager == null) {
+            DebugLog.log("initDeps: creating VpnNotificationManager");
             notificationManager = new VpnNotificationManager(this, ACTION_DISCONNECT, MyVpnService.class);
+            DebugLog.log("initDeps: notificationManager OK");
         }
         if (screenStateHandler == null) {
+            DebugLog.log("initDeps: creating ScreenStateHandler");
             screenStateHandler = new ScreenStateHandler(this, this);
+            DebugLog.log("initDeps: screenStateHandler OK");
         }
     }
 
     private void startVpnConnection() {
+        DebugLog.log("startVpnConnection: entry");
         synchronized (vpnLock) {
             if (isConnecting) {
-                DebugLog.log("Connection already in progress, ignoring");
+                DebugLog.log("startVpnConnection: already in progress, ignoring");
                 return;
             }
             isConnecting = true;
         }
 
         try {
+            DebugLog.log("startVpnConnection: setting state CONNECTING");
             updateState(State.CONNECTING);
-            TunAndroid tunAndroid = new TunAndroid(this);
 
+            DebugLog.log("startVpnConnection: creating TunAndroid");
+            TunAndroid tunAndroid = new TunAndroid(this);
+            DebugLog.log("startVpnConnection: TunAndroid created OK");
+
+            DebugLog.log("startVpnConnection: creating VpnClientWrapper, server="
+                    + settingsProvider.getServerIp() + ":" + settingsProvider.getServerPort());
             VpnClientWrapper newWrapper = new VpnClientWrapper(
                     tunAndroid,
                     settingsProvider.getServerIp(),
                     settingsProvider.getServerPort(),
                     settingsProvider.getJwt(),
                     true,
-                    poolFactory,
+                    getPoolFactory(),
                     this::onVpnStateChanged
             );
+            DebugLog.log("startVpnConnection: VpnClientWrapper created OK");
 
             synchronized (vpnLock) {
                 vpnClientWrapper = newWrapper;
@@ -102,7 +183,8 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
             }
 
         } catch (Exception e) {
-            DebugLog.log("VPN error: " + Log.getStackTraceString(e));
+            DebugLog.log("startVpnConnection: FAILED: " + e.getClass().getName()
+                    + ": " + e.getMessage() + "\n" + Log.getStackTraceString(e));
             synchronized (vpnLock) {
                 isConnecting = false;
             }
@@ -118,6 +200,8 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
      * Only SHUTDOWN (auth failure) and ERROR are terminal.
      */
     private void onVpnStateChanged(State state) {
+        if (isStopping) return;
+
         switch (state) {
             case CONNECTED:
                 trafficStats.start();
@@ -147,8 +231,12 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
     }
 
     private void updateState(State state) {
-        stateManager.setState(state);
-        notificationManager.updateNotificationForState(state);
+        if (stateManager != null) {
+            stateManager.setState(state);
+        }
+        if (notificationManager != null) {
+            notificationManager.updateNotificationForState(state);
+        }
     }
 
     // ==================== ScreenStateCallback Implementation ====================
@@ -159,6 +247,7 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
             if (vpnClientWrapper != null && vpnClientWrapper.isConnectionAlive()) {
                 wasConnectedBeforeSleep = true;
                 isSleeping = true;
+                vpnClientWrapper.pauseKeepAlive();
                 updateState(State.SLEEPING);
             }
         }
@@ -174,6 +263,9 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
             boolean connectionAlive;
             synchronized (vpnLock) {
                 connectionAlive = vpnClientWrapper != null && vpnClientWrapper.isConnectionAlive();
+                if (connectionAlive) {
+                    vpnClientWrapper.resumeKeepAlive();
+                }
             }
 
             if (connectionAlive) {
@@ -204,6 +296,9 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
     }
 
     private void stopVpnSync() {
+        if (isStopping) return;
+        isStopping = true;
+
         synchronized (vpnLock) {
             if (vpnClientWrapper != null) {
                 vpnClientWrapper.stop();
@@ -213,7 +308,11 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
         }
 
         updateState(State.DISCONNECTED);
-        stopForeground(STOP_FOREGROUND_REMOVE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            stopForeground(STOP_FOREGROUND_REMOVE);
+        } else {
+            stopForeground(true);
+        }
         stopSelf();
     }
 
@@ -223,8 +322,10 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
     public void onDestroy() {
         DebugLog.log("VPN service destroyed");
 
-        trafficStats.stop();
-        trafficStats.reset();
+        if (trafficStats != null) {
+            trafficStats.stop();
+            trafficStats.reset();
+        }
 
         synchronized (vpnLock) {
             if (vpnClientWrapper != null) {
@@ -239,7 +340,9 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
         }
 
         shutdownExecutor();
-        stateManager.reset();
+        if (stateManager != null) {
+            stateManager.reset();
+        }
         super.onDestroy();
     }
 
@@ -258,6 +361,7 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
     @Override
     public void onTaskRemoved(Intent rootIntent) {
         DebugLog.log("App swiped away, stopping VPN service");
+        isStopping = true;
         wasConnectedBeforeSleep = false;
 
         synchronized (vpnLock) {
@@ -272,7 +376,11 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
             screenStateHandler.unregister();
         }
 
-        stopForeground(STOP_FOREGROUND_REMOVE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            stopForeground(STOP_FOREGROUND_REMOVE);
+        } else {
+            stopForeground(true);
+        }
         stopSelf();
         super.onTaskRemoved(rootIntent);
     }

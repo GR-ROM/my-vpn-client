@@ -11,6 +11,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import java.util.function.Consumer;
 
 import su.grinev.myvpn.databinding.ActivityMainBinding;
+import su.grinev.myvpn.notification.VpnNotificationManager;
 import su.grinev.myvpn.settings.SettingsProvider;
 import su.grinev.myvpn.settings.SettingsValidator;
 import su.grinev.myvpn.settings.SharedPreferencesSettingsProvider;
@@ -108,9 +109,26 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        Intent i = new Intent(this, MyVpnService.class);
-        startForegroundService(i);
-        DebugLog.log("VPN start");
+        DebugLog.log("startVpn: SDK=" + android.os.Build.VERSION.SDK_INT
+                + " (" + android.os.Build.VERSION.RELEASE + ")");
+
+        try {
+            DebugLog.log("startVpn: ensuring notification channel exists");
+            VpnNotificationManager.ensureChannelExists(this);
+            DebugLog.log("startVpn: notification channel OK");
+        } catch (Exception e) {
+            DebugLog.log("startVpn: ensureChannelExists FAILED: " + android.util.Log.getStackTraceString(e));
+        }
+
+        try {
+            Intent i = new Intent(this, MyVpnService.class);
+            DebugLog.log("startVpn: calling startForegroundService");
+            startForegroundService(i);
+            DebugLog.log("startVpn: startForegroundService returned OK");
+        } catch (Exception e) {
+            DebugLog.log("startVpn: startForegroundService FAILED: " + e.getClass().getName()
+                    + ": " + e.getMessage() + "\n" + android.util.Log.getStackTraceString(e));
+        }
     }
 
     private void openSettings() {
@@ -123,25 +141,11 @@ public class MainActivity extends AppCompatActivity {
 
     private void updateUI(State state) {
         currentState = state;
-
         switch (state) {
-            case CONNECTED, LOGIN, AWAITING_LOGIN_RESPONSE, LIVE:
-                binding.connectButton.setText(R.string.btn_disconnect);
-                break;
-            case CONNECTING:
-                binding.connectButton.setText(R.string.btn_connecting);
-                break;
-            case SLEEPING:
-                binding.connectButton.setText(R.string.btn_sleeping);
-                break;
-            case WAITING:
-                binding.connectButton.setText(R.string.btn_connecting);
-                break;
-            case DISCONNECTED:
-            case ERROR:
-            case SHUTDOWN:
-                binding.connectButton.setText(R.string.btn_connect);
-                break;
+            case CONNECTED, LOGIN, AWAITING_LOGIN_RESPONSE, LIVE -> binding.connectButton.setText(R.string.btn_disconnect);
+            case CONNECTING, WAITING -> binding.connectButton.setText(R.string.btn_connecting);
+            case SLEEPING -> binding.connectButton.setText(R.string.btn_sleeping);
+            case DISCONNECTED, ERROR, SHUTDOWN -> binding.connectButton.setText(R.string.btn_connect);
         }
 
         int statusResId = switch (state) {

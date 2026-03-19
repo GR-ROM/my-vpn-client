@@ -7,7 +7,8 @@ import android.os.ParcelFileDescriptor;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 
 import lombok.Getter;
 
@@ -16,8 +17,8 @@ public class TunAndroid implements Tun {
     @Getter
     private final VpnService vpnService;
     private ParcelFileDescriptor tunFd;
-    private FileInputStream inputStream;
-    private FileOutputStream outputStream;
+    private FileChannel readChannel;
+    private FileChannel writeChannel;
     private String deviceName;
     public TunAndroid(VpnService vpnService) {
         this.vpnService = vpnService;
@@ -44,22 +45,22 @@ public class TunAndroid implements Tun {
         if (tunFd == null) {
             throw new IOException("Failed to establish TUN");
         }
-        inputStream = new FileInputStream(tunFd.getFileDescriptor());
-        outputStream = new FileOutputStream(tunFd.getFileDescriptor());
+        readChannel = new FileInputStream(tunFd.getFileDescriptor()).getChannel();
+        writeChannel = new FileOutputStream(tunFd.getFileDescriptor()).getChannel();
         deviceName = "tun0";
     }
 
     @Override
     public void close() {
         try {
-            if (inputStream != null) {
-                inputStream.close();
+            if (readChannel != null) {
+                readChannel.close();
             }
         } catch (IOException ignored) {
         }
         try {
-            if (outputStream != null) {
-                outputStream.close();
+            if (writeChannel != null) {
+                writeChannel.close();
             }
         } catch (IOException ignored) {
         }
@@ -70,8 +71,8 @@ public class TunAndroid implements Tun {
         } catch (IOException ignored) {
         }
 
-        inputStream = null;
-        outputStream = null;
+        readChannel = null;
+        writeChannel = null;
         tunFd = null;
         deviceName = null;
 
@@ -79,10 +80,10 @@ public class TunAndroid implements Tun {
     }
 
     @Override
-    public void readPacket(byte[] packet, AtomicInteger bytesRead) throws IOException {
-        if (inputStream != null) {
-            int read = inputStream.read(packet);
-            bytesRead.set(read);
+    public int readPacket(ByteBuffer buf) throws IOException {
+        if (readChannel != null) {
+            buf.clear();
+            return readChannel.read(buf);
         } else {
             try {
                 Thread.sleep(1000);
@@ -91,16 +92,16 @@ public class TunAndroid implements Tun {
                 Thread.currentThread().interrupt();
                 throw new IOException("Thread interrupted while waiting for TUN");
             }
+            return 0;
         }
     }
 
     @Override
-    public int writePacket(byte[] packet, int size) throws IOException {
-        if (outputStream == null) {
+    public int writePacket(ByteBuffer buf) throws IOException {
+        if (writeChannel == null) {
             throw new RuntimeException("tun not ready");
         }
-        outputStream.write(packet, 0, size);
-        return size;
+        return writeChannel.write(buf);
     }
 
     @Override

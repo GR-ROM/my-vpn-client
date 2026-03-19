@@ -4,7 +4,7 @@ import static su.grinev.myvpn.NetUtils.intToIpv4;
 import static su.grinev.myvpn.VpnClient.BUFFER_SIZE;
 
 import java.io.IOException;
-import java.util.Arrays;
+import java.nio.ByteBuffer;
 import java.util.function.Consumer;
 
 import su.grinev.model.VpnIpResponseDto;
@@ -26,10 +26,14 @@ public class VpnClientWrapper extends TunHandler {
             PoolFactory poolFactory,
             Consumer<State> onStateChange
     ) throws IOException, InterruptedException {
-        super(tun, new BufferPool(1000, BUFFER_SIZE));
+        super(tun, poolFactory.getFastPool("tunBufferPool", () -> ByteBuffer.allocateDirect(BUFFER_SIZE)));
         this.tun = tun;
         this.defaultRouteViaVpn = defaultRouteViaVpn;
-        this.vpnClient = new VpnClient(serverAddress, serverPort, jwt, this::onClientPacketReceived, this::onIpAssigned, poolFactory, onStateChange);
+        android.net.VpnService vpnService = tun.getVpnService();
+        this.vpnClient = new VpnClient(serverAddress, serverPort, jwt, this::onClientPacketReceived, this::onIpAssigned, poolFactory, onStateChange, s -> {
+            boolean ok = vpnService.protect(s);
+            DebugLog.log("protect(socket) returned " + ok);
+        });
     }
 
     private void onIpAssigned(VpnIpResponseDto vpnIpResponseDto) {
@@ -40,6 +44,9 @@ public class VpnClientWrapper extends TunHandler {
                     intToIpv4(vpnIpResponseDto.getDnsServer()),
                     defaultRouteViaVpn
             );
+            // Re-protect socket after tunnel is established.
+            // On Android 10, protect() before tunnel may not persist.
+            vpnClient.reprotectSocket();
             if (!super.running) {
                 super.start();
             }
@@ -59,18 +66,26 @@ public class VpnClientWrapper extends TunHandler {
         return vpnClient.getState() == State.LIVE && vpnClient.isSocketConnected();
     }
 
+    public void pauseKeepAlive() {
+        vpnClient.pauseKeepAlive();
+    }
+
+    public void resumeKeepAlive() {
+        vpnClient.resumeKeepAlive();
+    }
+
     @Override
-    public void onTunPacketReceived(byte[] packet, int bytesRead) {
+    public void onTunPacketReceived(ByteBuffer packet) {
         if (vpnClient.getState() == State.LIVE) {
-            trafficStats.addOutgoingBytes(bytesRead);
-            vpnClient.sendToServer(Arrays.copyOf(packet, bytesRead));
+            trafficStats.addOutgoingBytes(packet.remaining());
+            vpnClient.sendToServer(packet);
         }
     }
 
-    public void onClientPacketReceived(byte[] packet) {
+    public void onClientPacketReceived(ByteBuffer packet) {
         try {
-            trafficStats.addIncomingBytes(packet.length);
-            tun.writePacket(packet, packet.length);
+            trafficStats.addIncomingBytes(packet.remaining());
+            tun.writePacket(packet);
         } catch (IOException e) {
             throw new RuntimeException(e);
         }

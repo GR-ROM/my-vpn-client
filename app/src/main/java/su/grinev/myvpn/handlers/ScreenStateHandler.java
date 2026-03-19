@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.os.Build;
 
 import su.grinev.myvpn.DebugLog;
 
@@ -52,7 +53,11 @@ public class ScreenStateHandler {
             IntentFilter filter = new IntentFilter();
             filter.addAction(Intent.ACTION_SCREEN_OFF);
             filter.addAction(Intent.ACTION_SCREEN_ON);
-            context.registerReceiver(screenReceiver, filter);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(screenReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+            } else {
+                context.registerReceiver(screenReceiver, filter);
+            }
             isRegistered = true;
         }
     }

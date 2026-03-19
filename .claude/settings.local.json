@@ -9,7 +9,13 @@
       "Bash(cmd.exe:*)",
       "Bash(C:/Users/rgrin/AndroidStudioProjects/my-vpn-client/gradlew.bat assembleDebug)",
       "Bash(C:/Users/rgrin/AndroidStudioProjects/my-vpn-client/gradlew.bat:*)",
-      "Bash(JAVA_HOME=\"C:\\\\Users\\\\rgrin\\\\.jdks\\\\temurin-23.0.2\" C:/Users/rgrin/AndroidStudioProjects/my-vpn-client/gradlew.bat:*)"
+      "Bash(JAVA_HOME=\"C:\\\\Users\\\\rgrin\\\\.jdks\\\\temurin-23.0.2\" C:/Users/rgrin/AndroidStudioProjects/my-vpn-client/gradlew.bat:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(java -version:*)",
+      "Bash(reg query:*)",
+      "Bash(\"C:/Program Files/Android/Android Studio/jbr/bin/java.exe\" -version)",
+      "Bash(JAVA_HOME=\"C:/Program Files/Android/Android Studio/jbr\" ./gradlew.bat:*)",
+      "Bash(JAVA_HOME=\"C:/Program Files/Android/Android Studio/jbr\" ./gradlew.bat test:*)"
     ]
   }
 }
