@@ -89,8 +89,23 @@ public class VpnClient {
     private final RequestDto<VpnForwardPacketRequestDto> sendRequestDto = new RequestDto<>();
     private final Packet<RequestDto<?>> sendPacketDto = new Packet<>();
 
-    // Pre-allocated read buffer (single-threaded: VpnClientWorker thread only)
+    // Pre-allocated for PONG response (single-threaded: VpnClientWorker thread only)
+    private final ResponseDto<Void> pongResponseDto = new ResponseDto<>();
+    private final Packet<ResponseDto<?>> pongPacketDto = new Packet<>();
+
+    // Pre-allocated for LOGIN (single-threaded: VpnClientWorker thread only)
+    private final VpnLoginRequestDto loginDto = new VpnLoginRequestDto();
+    private final RequestDto<VpnLoginRequestDto> loginRequestDto = new RequestDto<>();
+    private final Packet<RequestDto<?>> loginPacketDto = new Packet<>();
+
+    // Pre-allocated read buffer and ByteBuffer view (single-threaded: VpnClientWorker thread only)
     private final byte[] readBuffer = new byte[MAX_PACKET_SIZE];
+    private final ByteBuffer readByteBuffer = ByteBuffer.wrap(readBuffer);
+
+    // Cached timestamp to avoid Instant.now() allocation on every packet
+    private static final long TIMESTAMP_CACHE_MS = 100;
+    private volatile Instant cachedTimestamp = Instant.now();
+    private volatile long cachedTimestampMs = System.currentTimeMillis();
 
     public VpnClient(
             String serverAddress,
@@ -118,6 +133,17 @@ public class VpnClient {
         sendRequestDto.setData(sendForwardDto);
         sendPacketDto.setVer("0.1");
         sendPacketDto.setPayload(sendRequestDto);
+
+        // Wire up pre-allocated pong wrappers
+        pongResponseDto.setStatus(OK);
+        pongPacketDto.setVer("0.1");
+        pongPacketDto.setPayload(pongResponseDto);
+
+        // Wire up pre-allocated login wrappers
+        loginRequestDto.setCommand(Command.LOGIN);
+        loginRequestDto.setData(loginDto);
+        loginPacketDto.setVer("0.1");
+        loginPacketDto.setPayload(loginRequestDto);
 
         try {
             sslContext = SSLContext.getInstance("TLS");
@@ -241,6 +267,10 @@ public class VpnClient {
 
                 sslSocket = (SSLSocket) factory.createSocket(rawSocket, serverAddress, serverPort, true);
                 sslSocket.setEnabledProtocols(new String[]{"TLSv1.3"});
+                sslSocket.setEnabledCipherSuites(new String[]{
+                    "TLS_AES_128_GCM_SHA256",
+                    "TLS_AES_256_GCM_SHA384"
+                });
                 sslSocket.setUseClientMode(true);
                 sslSocket.setSoTimeout(30 * 1000);
                 sslSocket.startHandshake();
@@ -285,10 +315,10 @@ public class VpnClient {
         while (getState() != DISCONNECTED && getState() != SHUTDOWN) {
             switch (getState()) {
                 case LOGIN -> {
-                    RequestDto<VpnLoginRequestDto> requestDto = RequestDto.wrap(Command.LOGIN, VpnLoginRequestDto.builder().jwt(jwt).build());
-                    Packet<RequestDto<?>> packet = Packet.ofRequest(requestDto);
+                    loginDto.setJwt(jwt);
+                    loginPacketDto.setTimestamp(Instant.now());
                     synchronized (connectionLock) {
-                        codec.serialize(packet, serverOutputStream);
+                        codec.serialize(loginPacketDto, serverOutputStream);
                     }
                     DebugLog.log("Login request sent");
                     setState(AWAITING_LOGIN_RESPONSE);
@@ -365,9 +395,10 @@ public class VpnClient {
                     RequestDto<VpnForwardPacketRequestDto> requestDto = (RequestDto<VpnForwardPacketRequestDto>) packet.getPayload();
 
                     if (requestDto.getCommand() == PING) {
-                        Packet<ResponseDto<?>> response = Packet.ofResponse(ResponseDto.ofRequest(requestDto, OK));
+                        pongResponseDto.setRequestId(requestDto.getSeq());
+                        pongPacketDto.setTimestamp(cachedTimestamp);
                         synchronized (connectionLock) {
-                            codec.serialize(response, serverOutputStream);
+                            codec.serialize(pongPacketDto, serverOutputStream);
                         }
                         continue;
                     }
@@ -403,7 +434,8 @@ public class VpnClient {
         readBuffer[2] = (byte) (packetSize >> 8);
         readBuffer[3] = (byte) packetSize;
         serverInputStream.readFully(readBuffer, 4, packetSize - 4);
-        return codec.deserialize(ByteBuffer.wrap(readBuffer, 0, packetSize), tClass);
+        readByteBuffer.position(0).limit(packetSize);
+        return codec.deserialize(readByteBuffer, tClass);
     }
 
     private void handleError() {
@@ -435,7 +467,12 @@ public class VpnClient {
         }
 
         sendForwardDto.setPacket(packet);
-        sendPacketDto.setTimestamp(Instant.now());
+        long now = System.currentTimeMillis();
+        if (now - cachedTimestampMs >= TIMESTAMP_CACHE_MS) {
+            cachedTimestamp = Instant.now();
+            cachedTimestampMs = now;
+        }
+        sendPacketDto.setTimestamp(cachedTimestamp);
 
         try {
             synchronized (connectionLock) {

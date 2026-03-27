@@ -62,13 +62,22 @@ public final class DebugLog {
         }
     }
 
+    // Reusable Date object and StringBuilder for log formatting — guarded by 'buffer' lock
+    private static final Date reusableDate = new Date();
+    private static final StringBuilder lineBuilder = new StringBuilder(256);
+
     public static void log(String msg) {
-        String timestamp = timeFormat.format(new Date());
-        String line = "[" + timestamp + "] " + msg + "\n";
         Log.d("MyVPN", msg);
 
         synchronized (buffer) {
-            buffer.append(line);
+            reusableDate.setTime(System.currentTimeMillis());
+            lineBuilder.setLength(0);
+            lineBuilder.append('[');
+            lineBuilder.append(timeFormat.format(reusableDate));
+            lineBuilder.append("] ");
+            lineBuilder.append(msg);
+            lineBuilder.append('\n');
+            buffer.append(lineBuilder);
             if (buffer.length() > 64_000) {
                 buffer.delete(0, buffer.length() - 32_000);
             }

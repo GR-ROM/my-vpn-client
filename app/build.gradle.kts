@@ -2,7 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
-val appVersion = "0.5.3"
+val appVersion = "0.6.0"
 val buildNumberFile = file("build-number.txt")
 val buildNumber = if (buildNumberFile.exists()) buildNumberFile.readText().trim().toInt() else 0
 
@@ -59,6 +59,7 @@ dependencies {
     implementation("su.grinev:jbson:0.5.3-compat")
     compileOnly("org.projectlombok:lombok:1.18.30")
     annotationProcessor("org.projectlombok:lombok:1.18.30")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation(libs.appcompat)
     implementation(libs.material)
     implementation(libs.constraintlayout)

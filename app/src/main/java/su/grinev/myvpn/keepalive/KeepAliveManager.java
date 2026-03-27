@@ -9,6 +9,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
+import java.time.Instant;
+
 import su.grinev.Codec;
 import su.grinev.model.Command;
 import su.grinev.model.Packet;
@@ -37,10 +39,9 @@ public class KeepAliveManager {
         void onConnectionDead();
     }
 
-    private static final long KEEPALIVE_INTERVAL_MS = 5000; // 5 seconds
-    private static final long PONG_TIMEOUT_MS = 3000; // 3 seconds to wait for PONG
-    private static final long CHECK_INTERVAL_MS = 1000; // Check every 1 second
-
+    private static final long KEEPALIVE_INTERVAL_MS = 30000; // 30 seconds
+    private static final long PONG_TIMEOUT_MS = 10000; // 10 seconds to wait for PONG
+    private static final long CHECK_INTERVAL_MS = 5000; // Check every 5 seconds
     private final Object lock;
     private final Codec codec;
     private final KeepAliveCallback callback;
@@ -53,19 +54,20 @@ public class KeepAliveManager {
 
     private ScheduledExecutorService scheduler;
     private ScheduledFuture<?> checkTask;
+    private final RequestDto<Void> pingRequestDto = new RequestDto<>();
+    private final Packet<RequestDto<?>> pingPacketDto = new Packet<>();
 
     public KeepAliveManager(Object lock, Codec codec, KeepAliveCallback callback) {
         this.lock = lock;
         this.codec = codec;
         this.callback = callback;
+
+        pingRequestDto.setCommand(Command.PING);
+        pingRequestDto.setData(null);
+        pingPacketDto.setVer("0.1");
+        pingPacketDto.setPayload(pingRequestDto);
     }
 
-    /**
-     * Start the keep-alive monitoring.
-     * Should be called when connection enters LIVE state.
-     *
-     * @param outputStream The output stream to send PING packets
-     */
     public void start(DataOutputStream outputStream) {
         if (isRunning.compareAndSet(false, true)) {
             this.outputStream = outputStream;
@@ -140,20 +142,6 @@ public class KeepAliveManager {
         lastPacketReceivedTime.set(System.currentTimeMillis());
     }
 
-    /**
-     * Check if currently waiting for a PONG response.
-     */
-    public boolean isAwaitingPong() {
-        return awaitingPong.get();
-    }
-
-    /**
-     * Get the time since last packet was received.
-     */
-    public long getTimeSinceLastPacket() {
-        return System.currentTimeMillis() - lastPacketReceivedTime.get();
-    }
-
     private void checkConnection() {
         if (!isRunning.get()) {
             return;
@@ -187,11 +175,10 @@ public class KeepAliveManager {
         }
 
         try {
-            RequestDto<Void> pingRequest = RequestDto.wrap(Command.PING);
-            Packet<RequestDto<?>> packet = Packet.ofRequest(pingRequest);
+            pingPacketDto.setTimestamp(Instant.now());
 
             synchronized (lock) {
-                codec.serialize(packet, out);
+                codec.serialize(pingPacketDto, out);
             }
 
             pingSentTime.set(System.currentTimeMillis());

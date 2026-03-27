@@ -35,6 +35,10 @@
     <string name="settings_server_ip">IP сервера</string>
     <string name="settings_server_port">Порт сервера</string>
     <string name="settings_jwt">JWT токен</string>
+    <string name="settings_scan_qr">Сканировать QR код</string>
+    <string name="settings_jwt_expires">Действителен до: %s</string>
+    <string name="settings_jwt_expired">Истёк: %s</string>
+    <string name="settings_jwt_expiration_unknown">Не удалось прочитать срок действия</string>
     <string name="settings_save">Сохранить</string>
     <string name="settings_saved">Настройки сохранены</string>
     <string name="settings_error_required">Обязательное поле</string>

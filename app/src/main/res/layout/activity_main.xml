@@ -48,31 +48,41 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:layout_marginTop="12dp">
+            android:gravity="center_vertical"
+            android:layout_marginTop="28dp">
 
-            <Button
+            <android.widget.Button
                 android:id="@+id/connectButton"
                 android:layout_width="0dp"
                 android:layout_weight="1"
                 android:layout_height="wrap_content"
+                android:background="@drawable/btn_disconnected"
+                android:textColor="#FFFFFF"
+                android:textStyle="bold"
+                android:textSize="16sp"
+                android:paddingTop="22dp"
+                android:paddingBottom="22dp"
+                android:stateListAnimator="@null"
                 android:text="@string/btn_connect"/>
 
             <ImageButton
                 android:id="@+id/trafficButton"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:layout_marginStart="8dp"
+                android:layout_width="56dp"
+                android:layout_height="56dp"
+                android:layout_marginStart="10dp"
                 android:src="@drawable/ic_traffic"
-                android:background="?attr/selectableItemBackgroundBorderless"
+                android:scaleType="centerInside"
+                android:background="@drawable/btn_disconnected"
                 android:contentDescription="@string/traffic_title"/>
 
             <ImageButton
                 android:id="@+id/settingsButton"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:layout_marginStart="8dp"
+                android:layout_width="56dp"
+                android:layout_height="56dp"
+                android:layout_marginStart="10dp"
                 android:src="@drawable/ic_settings"
-                android:background="?attr/selectableItemBackgroundBorderless"
+                android:scaleType="centerInside"
+                android:background="@drawable/btn_disconnected"
                 android:contentDescription="@string/action_settings"/>
         </LinearLayout>
 

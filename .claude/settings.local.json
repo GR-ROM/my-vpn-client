@@ -15,7 +15,8 @@
       "Bash(reg query:*)",
       "Bash(\"C:/Program Files/Android/Android Studio/jbr/bin/java.exe\" -version)",
       "Bash(JAVA_HOME=\"C:/Program Files/Android/Android Studio/jbr\" ./gradlew.bat:*)",
-      "Bash(JAVA_HOME=\"C:/Program Files/Android/Android Studio/jbr\" ./gradlew.bat test:*)"
+      "Bash(JAVA_HOME=\"C:/Program Files/Android/Android Studio/jbr\" ./gradlew.bat test:*)",
+      "Bash(JAVA_HOME=\"/c/Program Files/Android/Android Studio/jbr\" ./gradlew.bat assembleDebug)"
     ]
   }
 }

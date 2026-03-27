@@ -248,6 +248,9 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
                 wasConnectedBeforeSleep = true;
                 isSleeping = true;
                 vpnClientWrapper.pauseKeepAlive();
+                if (trafficStats != null) {
+                    trafficStats.stop();
+                }
                 updateState(State.SLEEPING);
             }
         }
@@ -270,6 +273,9 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
 
             if (connectionAlive) {
                 DebugLog.log("Connection still alive after wake");
+                if (trafficStats != null) {
+                    trafficStats.start();
+                }
                 updateState(State.CONNECTED);
             } else {
                 DebugLog.log("Connection lost during suspend, reconnecting");

@@ -1,12 +1,18 @@
 package su.grinev.myvpn;
 
+import android.animation.ObjectAnimator;
+import android.animation.ValueAnimator;
 import android.content.Intent;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.TransitionDrawable;
 import android.net.VpnService;
 import android.os.Bundle;
 import android.view.View;
+import android.view.animation.AccelerateDecelerateInterpolator;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.ContextCompat;
 
 import java.util.function.Consumer;
 
@@ -25,6 +31,8 @@ public class MainActivity extends AppCompatActivity {
     private SettingsValidator settingsValidator;
     private final VpnStateManager stateManager = VpnStateManager.getInstance();
     private final Consumer<State> stateListener = this::updateUI;
+    private ObjectAnimator pulseAnimator;
+    private int currentBgResId = R.drawable.btn_disconnected;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -148,6 +156,22 @@ public class MainActivity extends AppCompatActivity {
             case DISCONNECTED, ERROR, SHUTDOWN -> binding.connectButton.setText(R.string.btn_connect);
         }
 
+        int bgResId = switch (state) {
+            case CONNECTED, LIVE -> R.drawable.btn_connected;
+            case CONNECTING, WAITING, LOGIN, AWAITING_LOGIN_RESPONSE -> R.drawable.btn_connecting;
+            case ERROR -> R.drawable.btn_error;
+            case DISCONNECTED, SHUTDOWN, SLEEPING -> R.drawable.btn_disconnected;
+        };
+        transitionBackground(bgResId);
+
+        boolean animating = state == State.CONNECTING || state == State.WAITING
+                || state == State.LOGIN || state == State.AWAITING_LOGIN_RESPONSE;
+        if (animating) {
+            startPulse();
+        } else {
+            stopPulse();
+        }
+
         int statusResId = switch (state) {
             case CONNECTED, LOGIN, AWAITING_LOGIN_RESPONSE, LIVE -> R.string.status_connected;
             case CONNECTING -> R.string.status_connecting;
@@ -157,5 +181,34 @@ public class MainActivity extends AppCompatActivity {
             case SLEEPING -> R.string.status_sleeping;
         };
         binding.statusText.setText(statusResId);
+    }
+
+    private void transitionBackground(int newBgResId) {
+        if (newBgResId == currentBgResId) return;
+        Drawable oldBg = ContextCompat.getDrawable(this, currentBgResId);
+        Drawable newBg = ContextCompat.getDrawable(this, newBgResId);
+        TransitionDrawable transition = new TransitionDrawable(new Drawable[]{oldBg, newBg});
+        transition.setCrossFadeEnabled(true);
+        binding.connectButton.setBackground(transition);
+        transition.startTransition(400);
+        currentBgResId = newBgResId;
+    }
+
+    private void startPulse() {
+        if (pulseAnimator != null && pulseAnimator.isRunning()) return;
+        pulseAnimator = ObjectAnimator.ofFloat(binding.connectButton, "alpha", 1f, 0.3f);
+        pulseAnimator.setDuration(600);
+        pulseAnimator.setRepeatCount(ValueAnimator.INFINITE);
+        pulseAnimator.setRepeatMode(ValueAnimator.REVERSE);
+        pulseAnimator.setInterpolator(new AccelerateDecelerateInterpolator());
+        pulseAnimator.start();
+    }
+
+    private void stopPulse() {
+        if (pulseAnimator != null) {
+            pulseAnimator.cancel();
+            pulseAnimator = null;
+        }
+        binding.connectButton.setAlpha(1f);
     }
 }
