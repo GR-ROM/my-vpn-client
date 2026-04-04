@@ -487,7 +487,7 @@ public class VpnClient {
 
     public void stop() {
         DebugLog.log("Stopping VPN client");
-        keepAliveManager.stop();
+        keepAliveManager.destroy();
         setState(SHUTDOWN);
         closeConnection();
 

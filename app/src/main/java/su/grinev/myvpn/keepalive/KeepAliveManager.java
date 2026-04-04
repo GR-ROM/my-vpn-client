@@ -52,7 +52,11 @@ public class KeepAliveManager {
     private final AtomicBoolean awaitingPong = new AtomicBoolean(false);
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
 
-    private ScheduledExecutorService scheduler;
+    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "KeepAliveThread");
+        t.setDaemon(true);
+        return t;
+    });
     private ScheduledFuture<?> checkTask;
     private final RequestDto<Void> pingRequestDto = new RequestDto<>();
     private final Packet<RequestDto<?>> pingPacketDto = new Packet<>();
@@ -75,12 +79,6 @@ public class KeepAliveManager {
             awaitingPong.set(false);
             pingSentTime.set(0);
 
-            scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-                Thread t = new Thread(r, "KeepAliveThread");
-                t.setDaemon(true);
-                return t;
-            });
-
             checkTask = scheduler.scheduleWithFixedDelay(
                     this::checkConnection,
                     CHECK_INTERVAL_MS,
@@ -102,23 +100,26 @@ public class KeepAliveManager {
                 checkTask.cancel(false);
                 checkTask = null;
             }
-
-            if (scheduler != null) {
-                scheduler.shutdown();
-                try {
-                    if (!scheduler.awaitTermination(500, TimeUnit.MILLISECONDS)) {
-                        scheduler.shutdownNow();
-                    }
-                } catch (InterruptedException e) {
-                    scheduler.shutdownNow();
-                    Thread.currentThread().interrupt();
-                }
-                scheduler = null;
-            }
-
             outputStream = null;
             awaitingPong.set(false);
             DebugLog.log("KeepAlive stopped");
+        }
+    }
+
+    /**
+     * Permanently shut down the keep-alive scheduler.
+     * Call this only when the VpnClient itself is being destroyed.
+     */
+    public void destroy() {
+        stop();
+        scheduler.shutdown();
+        try {
+            if (!scheduler.awaitTermination(500, TimeUnit.MILLISECONDS)) {
+                scheduler.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            scheduler.shutdownNow();
+            Thread.currentThread().interrupt();
         }
     }
 
