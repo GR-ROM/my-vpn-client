@@ -3,6 +3,7 @@ package su.grinev.myvpn.traffic;
 import android.os.Handler;
 import android.os.Looper;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -23,7 +24,7 @@ public class TrafficStatsManager {
     private final AtomicLong outgoingBytes = new AtomicLong(0);
     private final AtomicLong lastIncomingBytes = new AtomicLong(0);
     private final AtomicLong lastOutgoingBytes = new AtomicLong(0);
-    private final List<TrafficStats> history = new ArrayList<>();
+    private final ArrayDeque<TrafficStats> history = new ArrayDeque<>();
     private final Object historyLock = new Object();
     private final AtomicInteger listenerIdGenerator = new AtomicInteger(0);
     private final Map<Integer, Consumer<TrafficStats>> listeners = new ConcurrentHashMap<>();
@@ -149,9 +150,9 @@ public class TrafficStatsManager {
         TrafficStats stats = new TrafficStats(currentIncoming, currentOutgoing, inRate, outRate);
 
         synchronized (historyLock) {
-            history.add(stats);
+            history.addLast(stats);
             while (history.size() > MAX_HISTORY_SIZE) {
-                history.remove(0);
+                history.pollFirst();
             }
         }
 

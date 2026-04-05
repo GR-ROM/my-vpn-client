@@ -2,7 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
-val appVersion = "0.6.0"
+val appVersion = "0.7.0"
 val buildNumberFile = file("build-number.txt")
 val buildNumber = if (buildNumberFile.exists()) buildNumberFile.readText().trim().toInt() else 0
 
@@ -56,7 +56,7 @@ tasks.matching { it.name == "assembleDebug" }.configureEach {
 }
 
 dependencies {
-    implementation("su.grinev:jbson:0.5.3-compat")
+    implementation("su.grinev:jbson:0.6.4")
     compileOnly("org.projectlombok:lombok:1.18.30")
     annotationProcessor("org.projectlombok:lombok:1.18.30")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
