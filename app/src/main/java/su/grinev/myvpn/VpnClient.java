@@ -20,6 +20,7 @@ import static su.grinev.myvpn.TunHandler.MAX_MTU;
 import android.annotation.SuppressLint;
 
 import java.io.DataInputStream;
+import java.time.Instant;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -30,7 +31,6 @@ import java.security.KeyManagementException;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
-import java.time.Instant;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -76,7 +76,6 @@ public class VpnClient {
     private volatile State state;
     private volatile boolean hasError = false;
     private int timeout = 0;
-    private final Object connectionLock = new Object();
     private DataOutputStream serverOutputStream;
     private DataInputStream serverInputStream;
     private SSLSocket socket;
@@ -102,10 +101,7 @@ public class VpnClient {
     private final byte[] readBuffer = new byte[MAX_PACKET_SIZE];
     private final ByteBuffer readByteBuffer = ByteBuffer.wrap(readBuffer);
 
-    // Cached timestamp to avoid Instant.now() allocation on every packet
-    private static final long TIMESTAMP_CACHE_MS = 100;
-    private volatile Instant cachedTimestamp = Instant.now();
-    private volatile long cachedTimestampMs = System.currentTimeMillis();
+    private static final Instant FIXED_TIMESTAMP = Instant.now();
 
     public VpnClient(
             String serverAddress,
@@ -128,18 +124,15 @@ public class VpnClient {
 
         this.keepAliveManager = new KeepAliveManager(this, codec, this::onKeepAliveFailed);
 
-        // Wire up pre-allocated send wrappers
         sendRequestDto.setCommand(FORWARD_PACKET);
         sendRequestDto.setData(sendForwardDto);
         sendPacketDto.setVer("0.1");
         sendPacketDto.setPayload(sendRequestDto);
 
-        // Wire up pre-allocated pong wrappers
         pongResponseDto.setStatus(OK);
         pongPacketDto.setVer("0.1");
         pongPacketDto.setPayload(pongResponseDto);
 
-        // Wire up pre-allocated login wrappers
         loginRequestDto.setCommand(Command.LOGIN);
         loginRequestDto.setData(loginDto);
         loginPacketDto.setVer("0.1");
@@ -155,8 +148,12 @@ public class VpnClient {
                     public X509Certificate[] getAcceptedIssuers() {
                         return null;
                     }
-                    public void checkClientTrusted(X509Certificate[] certs, String authType) {}
-                    public void checkServerTrusted(X509Certificate[] certs, String authType) {}
+
+                    public void checkClientTrusted(X509Certificate[] certs, String authType) {
+                    }
+
+                    public void checkServerTrusted(X509Certificate[] certs, String authType) {
+                    }
                 }
         };
 
@@ -190,9 +187,7 @@ public class VpnClient {
     }
 
     public State getState() {
-        synchronized (stateLock) {
-            return state;
-        }
+        return state;
     }
 
     private void setState(State newState) {
@@ -255,22 +250,15 @@ public class VpnClient {
                 SSLSocketFactory factory = sslContext.getSocketFactory();
                 DebugLog.log("Connecting to " + serverAddress + ":" + serverPort);
 
-                // Create raw socket first and protect it BEFORE wrapping with SSL.
-                // On Android 10, protect(SSLSocket) may not protect the underlying socket.
                 rawSocket = new Socket();
                 socketProtector.accept(rawSocket);
-                DebugLog.log("Raw socket protected from VPN routing (pre-tunnel)");
                 rawSocket.setTcpNoDelay(true);
                 rawSocket.setKeepAlive(true);
                 rawSocket.connect(new InetSocketAddress(serverAddress, serverPort));
-                DebugLog.log("Raw socket connected");
 
                 sslSocket = (SSLSocket) factory.createSocket(rawSocket, serverAddress, serverPort, true);
                 sslSocket.setEnabledProtocols(new String[]{"TLSv1.3"});
-                sslSocket.setEnabledCipherSuites(new String[]{
-                    "TLS_AES_128_GCM_SHA256",
-                    "TLS_AES_256_GCM_SHA384"
-                });
+                sslSocket.setEnabledCipherSuites(new String[]{ "TLS_AES_128_GCM_SHA256", "TLS_AES_256_GCM_SHA384"});
                 sslSocket.setUseClientMode(true);
                 sslSocket.setSoTimeout(30 * 1000);
                 sslSocket.startHandshake();
@@ -279,11 +267,9 @@ public class VpnClient {
                 outStream = new DataOutputStream(sslSocket.getOutputStream());
                 inStream = new DataInputStream(sslSocket.getInputStream());
 
-                synchronized (connectionLock) {
-                    socket = sslSocket;
-                    serverOutputStream = outStream;
-                    serverInputStream = inStream;
-                }
+                socket = sslSocket;
+                serverOutputStream = outStream;
+                serverInputStream = inStream;
 
                 setState(LOGIN);
                 DebugLog.log("Connected");
@@ -316,10 +302,8 @@ public class VpnClient {
             switch (getState()) {
                 case LOGIN -> {
                     loginDto.setJwt(jwt);
-                    loginPacketDto.setTimestamp(Instant.now());
-                    synchronized (connectionLock) {
-                        codec.serialize(loginPacketDto, serverOutputStream);
-                    }
+                    loginPacketDto.setTimestamp(FIXED_TIMESTAMP);
+                    codec.serialize(loginPacketDto, serverOutputStream);
                     DebugLog.log("Login request sent");
                     setState(AWAITING_LOGIN_RESPONSE);
                 }
@@ -350,16 +334,14 @@ public class VpnClient {
                         DebugLog.log("[AUTH] onIpAssigned returned");
 
                         DebugLog.log("[AUTH] State after onIpAssigned: " + getState());
-                        synchronized (connectionLock) {
-                            DebugLog.log("[AUTH] serverOutputStream=" + (serverOutputStream != null ? "OK" : "NULL")
-                                    + ", serverInputStream=" + (serverInputStream != null ? "OK" : "NULL")
-                                    + ", socket=" + (socket != null ? (socket.isClosed() ? "CLOSED" : "OK") : "NULL"));
-                            if (serverOutputStream == null) {
-                                DebugLog.log("[AUTH] serverOutputStream is NULL, cannot start KeepAlive!");
-                                break;
-                            }
-                            keepAliveManager.start(serverOutputStream);
+                        DebugLog.log("[AUTH] serverOutputStream=" + (serverOutputStream != null ? "OK" : "NULL")
+                                + ", serverInputStream=" + (serverInputStream != null ? "OK" : "NULL")
+                                + ", socket=" + (socket != null ? (socket.isClosed() ? "CLOSED" : "OK") : "NULL"));
+                        if (serverOutputStream == null) {
+                            DebugLog.log("[AUTH] serverOutputStream is NULL, cannot start KeepAlive!");
+                            break;
                         }
+                        keepAliveManager.start(serverOutputStream);
                         DebugLog.log("[AUTH] KeepAlive started, entering LIVE loop. State=" + getState());
                     } else {
                         DebugLog.log("[AUTH] Auth failed: " + responseDto.getStatus().name());
@@ -370,12 +352,10 @@ public class VpnClient {
                 }
 
                 case LIVE -> {
-                    synchronized (connectionLock) {
-                        if (serverInputStream == null) {
-                            DebugLog.log("[LIVE] serverInputStream is NULL, disconnecting");
-                            setState(DISCONNECTED);
-                            break;
-                        }
+                    if (serverInputStream == null) {
+                        DebugLog.log("[LIVE] serverInputStream is NULL, disconnecting");
+                        setState(DISCONNECTED);
+                        break;
                     }
 
                     Packet<?> packet;
@@ -396,10 +376,8 @@ public class VpnClient {
 
                     if (requestDto.getCommand() == PING) {
                         pongResponseDto.setRequestId(requestDto.getSeq());
-                        pongPacketDto.setTimestamp(cachedTimestamp);
-                        synchronized (connectionLock) {
-                            codec.serialize(pongPacketDto, serverOutputStream);
-                        }
+                        pongPacketDto.setTimestamp(FIXED_TIMESTAMP);
+                        codec.serialize(pongPacketDto, serverOutputStream);
                         continue;
                     }
 
@@ -426,9 +404,7 @@ public class VpnClient {
 
     private <T> T readPacket(Class<T> tClass) throws IOException {
         int packetSize = serverInputStream.readInt();
-        if (packetSize <= 4 || packetSize > MAX_PACKET_SIZE) {
-            throw new IOException("Invalid packet size: " + packetSize);
-        }
+        if (packetSize <= 4 || packetSize > MAX_PACKET_SIZE) { throw new IOException("Invalid packet size: " + packetSize); }
         readBuffer[0] = (byte) (packetSize >> 24);
         readBuffer[1] = (byte) (packetSize >> 16);
         readBuffer[2] = (byte) (packetSize >> 8);
@@ -467,17 +443,10 @@ public class VpnClient {
         }
 
         sendForwardDto.setPacket(packet);
-        long now = System.currentTimeMillis();
-        if (now - cachedTimestampMs >= TIMESTAMP_CACHE_MS) {
-            cachedTimestamp = Instant.now();
-            cachedTimestampMs = now;
-        }
-        sendPacketDto.setTimestamp(cachedTimestamp);
+        sendPacketDto.setTimestamp(FIXED_TIMESTAMP);
 
         try {
-            synchronized (connectionLock) {
-                codec.serialize(sendPacketDto, serverOutputStream);
-            }
+            codec.serialize(sendPacketDto, serverOutputStream);
         } catch (RuntimeException | IOException ex) {
             DebugLog.log("Send error: " + ex.getClass().getName() + ": " + ex.getMessage()
                     + "\n" + android.util.Log.getStackTraceString(ex));
@@ -508,53 +477,45 @@ public class VpnClient {
     }
 
     public void resumeKeepAlive() {
-        synchronized (connectionLock) {
-            if (serverOutputStream != null && getState() == LIVE) {
-                keepAliveManager.start(serverOutputStream);
-                DebugLog.log("KeepAlive resumed after sleep");
-            }
+        if (serverOutputStream != null && getState() == LIVE) {
+            keepAliveManager.start(serverOutputStream);
+            DebugLog.log("KeepAlive resumed after sleep");
         }
     }
 
     public void reprotectSocket() {
-        synchronized (connectionLock) {
-            if (rawSocket != null && !rawSocket.isClosed()) {
-                socketProtector.accept(rawSocket);
-                DebugLog.log("Raw socket re-protected (post-tunnel)");
-            }
+        if (rawSocket != null && !rawSocket.isClosed()) {
+            socketProtector.accept(rawSocket);
+            DebugLog.log("Raw socket re-protected (post-tunnel)");
         }
     }
 
     public boolean isSocketConnected() {
-        synchronized (connectionLock) {
-            return socket != null && socket.isConnected() && !socket.isClosed();
-        }
+        return socket != null && socket.isConnected() && !socket.isClosed();
     }
 
     private void closeConnection() {
         DebugLog.log("[CLOSE] closeConnection called from " + Thread.currentThread().getName());
-        synchronized (connectionLock) {
-            if (serverOutputStream != null) {
-                try {
-                    serverOutputStream.close();
-                } catch (IOException ignored) {}
-                serverOutputStream = null;
-            }
-
-            if (serverInputStream != null) {
-                try {
-                    serverInputStream.close();
-                } catch (IOException ignored) {}
-                serverInputStream = null;
-            }
-
-            if (socket != null) {
-                try {
-                    socket.close();
-                } catch (IOException ignored) {}
-                socket = null;
-            }
-            rawSocket = null;
+        if (serverOutputStream != null) {
+            try {
+                serverOutputStream.close();
+            } catch (IOException ignored) {}
+            serverOutputStream = null;
         }
+
+        if (serverInputStream != null) {
+            try {
+                serverInputStream.close();
+            } catch (IOException ignored) {}
+            serverInputStream = null;
+        }
+
+        if (socket != null) {
+            try {
+                socket.close();
+            } catch (IOException ignored) {}
+            socket = null;
+        }
+        rawSocket = null;
     }
 }
