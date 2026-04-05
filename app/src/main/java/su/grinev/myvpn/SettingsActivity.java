@@ -1,6 +1,7 @@
 package su.grinev.myvpn;
 
 import android.content.Context;
+import android.content.Intent;
 import android.graphics.Color;
 import android.os.Bundle;
 import android.text.Editable;
@@ -70,6 +71,8 @@ public class SettingsActivity extends AppCompatActivity {
         loadSettings();
 
         binding.saveButton.setOnClickListener(v -> saveSettings());
+        binding.excludedAppsButton.setOnClickListener(v ->
+                startActivity(new Intent(this, ExcludedAppsActivity.class)));
         binding.scanQrButton.setOnClickListener(v -> {
             ScanOptions options = new ScanOptions();
             options.setDesiredBarcodeFormats(ScanOptions.QR_CODE);

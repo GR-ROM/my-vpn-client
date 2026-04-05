@@ -9,6 +9,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.util.Set;
 
 import lombok.Getter;
 
@@ -25,7 +26,7 @@ public class TunAndroid implements Tun {
     }
 
     @Override
-    public void configureTun(String ip, String gateway, String dnsServer, boolean defaultRouteViaVpn) throws IOException {
+    public void configureTun(String ip, String gateway, String dnsServer, boolean defaultRouteViaVpn, Set<String> excludedApps) throws IOException {
         VpnService.Builder builder;
         try {
             builder = vpnService.new Builder()
@@ -35,6 +36,14 @@ public class TunAndroid implements Tun {
                     .addDnsServer(gateway);
         } catch (PackageManager.NameNotFoundException e) {
             throw new RuntimeException(e);
+        }
+        for (String pkg : excludedApps) {
+            try {
+                builder.addDisallowedApplication(pkg);
+                DebugLog.log("Excluded from VPN: " + pkg);
+            } catch (PackageManager.NameNotFoundException e) {
+                DebugLog.log("Excluded app not found, skipping: " + pkg);
+            }
         }
         DebugLog.log("Set tun IP: " + ip);
         if (defaultRouteViaVpn) {

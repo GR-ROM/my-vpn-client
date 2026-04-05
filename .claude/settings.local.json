@@ -32,7 +32,8 @@
       "Bash(curl -s -u \"GR-ROM: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\" \"https://maven.pkg.github.com/GR-ROM/JBson/su/grinev/jbson/0.6.2/jbson-0.6.2.pom\")",
       "Bash(echo \"exit: $?\")",
       "Bash(powershell.exe -Command \"& { .\\\\gradlew.bat assembleDebug 2>&1 | Out-String }\")",
-      "Bash(powershell.exe:*)"
+      "Bash(powershell.exe:*)",
+      "Bash(kill %1)"
     ]
   }
 }

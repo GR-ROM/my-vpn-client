@@ -16,28 +16,9 @@ import su.grinev.model.Packet;
 import su.grinev.model.RequestDto;
 import su.grinev.myvpn.DebugLog;
 
-/**
- * Manages connection keep-alive by sending periodic PING packets.
- * Single Responsibility: Monitor connection health and send keep-alive pings.
- *
- * Usage:
- * 1. Call onPacketReceived() whenever any packet is received from server
- * 2. Call onPongReceived() when a PONG response is received
- * 3. Call start() when connection is established (LIVE state)
- * 4. Call stop() when disconnecting
- */
 public class KeepAliveManager {
 
-    /**
-     * Callback interface for keep-alive events.
-     */
-    public interface KeepAliveCallback {
-        /**
-         * Called when keep-alive detects connection is dead (no PONG response).
-         */
-        void onConnectionDead();
-    }
-
+    public interface KeepAliveCallback { void onConnectionDead(); }
     private static final Instant FIXED_TIMESTAMP = Instant.now();
     private static final long KEEPALIVE_INTERVAL_MS = 30000; // 30 seconds
     private static final long PONG_TIMEOUT_MS = 10000; // 10 seconds to wait for PONG
@@ -45,7 +26,6 @@ public class KeepAliveManager {
     private final Object lock;
     private final Codec codec;
     private final KeepAliveCallback callback;
-
     private volatile DataOutputStream outputStream;
     private final AtomicLong lastPacketReceivedTime = new AtomicLong(0);
     private final AtomicLong pingSentTime = new AtomicLong(0);
@@ -90,10 +70,6 @@ public class KeepAliveManager {
         }
     }
 
-    /**
-     * Stop the keep-alive monitoring.
-     * Should be called when disconnecting.
-     */
     public void stop() {
         if (isRunning.compareAndSet(true, false)) {
             if (checkTask != null) {
@@ -106,10 +82,6 @@ public class KeepAliveManager {
         }
     }
 
-    /**
-     * Permanently shut down the keep-alive scheduler.
-     * Call this only when the VpnClient itself is being destroyed.
-     */
     public void destroy() {
         stop();
         scheduler.shutdown();
@@ -123,18 +95,10 @@ public class KeepAliveManager {
         }
     }
 
-    /**
-     * Notify that a packet was received from the server.
-     * Call this for ANY packet received (FORWARD_PACKET, PONG, etc.)
-     */
     public void onPacketReceived() {
         lastPacketReceivedTime.set(System.currentTimeMillis());
     }
 
-    /**
-     * Notify that a PONG response was received.
-     * This clears the awaiting PONG state.
-     */
     public void onPongReceived() {
         if (awaitingPong.compareAndSet(true, false)) {
             long rtt = System.currentTimeMillis() - pingSentTime.get();
@@ -144,14 +108,11 @@ public class KeepAliveManager {
     }
 
     private void checkConnection() {
-        if (!isRunning.get()) {
-            return;
-        }
+        if (!isRunning.get()) { return; }
 
         long now = System.currentTimeMillis();
         long timeSinceLastPacket = now - lastPacketReceivedTime.get();
 
-        // Check if we're waiting for PONG and it timed out
         if (awaitingPong.get()) {
             long timeSincePing = now - pingSentTime.get();
             if (timeSincePing > PONG_TIMEOUT_MS) {
@@ -163,10 +124,7 @@ public class KeepAliveManager {
             }
         }
 
-        // Check if we need to send a PING
-        if (!awaitingPong.get() && timeSinceLastPacket > KEEPALIVE_INTERVAL_MS) {
-            sendPing();
-        }
+        if (!awaitingPong.get() && timeSinceLastPacket > KEEPALIVE_INTERVAL_MS) { sendPing(); }
     }
 
     private void sendPing() {

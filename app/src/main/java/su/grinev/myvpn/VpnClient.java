@@ -73,13 +73,14 @@ public class VpnClient {
     private final KeepAliveManager keepAliveManager;
     private final Set<State> reconnectableStates = Set.of(DISCONNECTED, WAITING);
     private final Object stateLock = new Object();
+    private final Object outputLock = new Object();
     private volatile State state;
     private volatile boolean hasError = false;
     private int timeout = 0;
-    private DataOutputStream serverOutputStream;
-    private DataInputStream serverInputStream;
-    private SSLSocket socket;
-    private Socket rawSocket;
+    private volatile DataOutputStream serverOutputStream;
+    private volatile DataInputStream serverInputStream;
+    private volatile SSLSocket socket;
+    private volatile Socket rawSocket;
     public volatile String assignedIp;
     public volatile byte[] assignedIpBytes;
 
@@ -122,7 +123,7 @@ public class VpnClient {
         this.codec = Codec.messagePack(poolFactory, BUFFER_SIZE, Binder.ClassNameMode.SIMPLE_NAME);
         this.onStateChange = onStateChange;
 
-        this.keepAliveManager = new KeepAliveManager(this, codec, this::onKeepAliveFailed);
+        this.keepAliveManager = new KeepAliveManager(outputLock, codec, this::onKeepAliveFailed);
 
         sendRequestDto.setCommand(FORWARD_PACKET);
         sendRequestDto.setData(sendForwardDto);
@@ -303,7 +304,9 @@ public class VpnClient {
                 case LOGIN -> {
                     loginDto.setJwt(jwt);
                     loginPacketDto.setTimestamp(FIXED_TIMESTAMP);
-                    codec.serialize(loginPacketDto, serverOutputStream);
+                    synchronized (outputLock) {
+                        codec.serialize(loginPacketDto, serverOutputStream);
+                    }
                     DebugLog.log("Login request sent");
                     setState(AWAITING_LOGIN_RESPONSE);
                 }
@@ -377,7 +380,9 @@ public class VpnClient {
                     if (requestDto.getCommand() == PING) {
                         pongResponseDto.setRequestId(requestDto.getSeq());
                         pongPacketDto.setTimestamp(FIXED_TIMESTAMP);
-                        codec.serialize(pongPacketDto, serverOutputStream);
+                        synchronized (outputLock) {
+                            codec.serialize(pongPacketDto, serverOutputStream);
+                        }
                         continue;
                     }
 
@@ -446,7 +451,9 @@ public class VpnClient {
         sendPacketDto.setTimestamp(FIXED_TIMESTAMP);
 
         try {
-            codec.serialize(sendPacketDto, serverOutputStream);
+            synchronized (outputLock) {
+                codec.serialize(sendPacketDto, serverOutputStream);
+            }
         } catch (RuntimeException | IOException ex) {
             DebugLog.log("Send error: " + ex.getClass().getName() + ": " + ex.getMessage()
                     + "\n" + android.util.Log.getStackTraceString(ex));
@@ -496,26 +503,28 @@ public class VpnClient {
 
     private void closeConnection() {
         DebugLog.log("[CLOSE] closeConnection called from " + Thread.currentThread().getName());
-        if (serverOutputStream != null) {
-            try {
-                serverOutputStream.close();
-            } catch (IOException ignored) {}
-            serverOutputStream = null;
-        }
+        synchronized (outputLock) {
+            if (serverOutputStream != null) {
+                try {
+                    serverOutputStream.close();
+                } catch (IOException ignored) {}
+                serverOutputStream = null;
+            }
 
-        if (serverInputStream != null) {
-            try {
-                serverInputStream.close();
-            } catch (IOException ignored) {}
-            serverInputStream = null;
-        }
+            if (serverInputStream != null) {
+                try {
+                    serverInputStream.close();
+                } catch (IOException ignored) {}
+                serverInputStream = null;
+            }
 
-        if (socket != null) {
-            try {
-                socket.close();
-            } catch (IOException ignored) {}
-            socket = null;
+            if (socket != null) {
+                try {
+                    socket.close();
+                } catch (IOException ignored) {}
+                socket = null;
+            }
+            rawSocket = null;
         }
-        rawSocket = null;
     }
 }
