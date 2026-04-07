@@ -6,8 +6,10 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"
+        android:minSdkVersion="34" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"
+        android:minSdkVersion="33" />
 
     <queries>
         <intent>
@@ -52,12 +54,17 @@
             android:label="@string/excluded_apps_title"
             android:parentActivityName=".SettingsActivity"/>
 
+        <activity
+            android:name="com.journeyapps.barcodescanner.CaptureActivity"
+            android:screenOrientation="portrait"
+            tools:replace="screenOrientation" />
+
         <service
             android:name=".MyVpnService"
             android:foregroundServiceType="specialUse"
             android:exported="false"
             android:permission="android.permission.BIND_VPN_SERVICE"
-            tools:ignore="ForegroundServicePermission">
+            tools:ignore="ForegroundServicePermission,ForegroundServiceSpecialUse">
             <intent-filter>
                 <action android:name="android.net.VpnService" />
             </intent-filter>

@@ -68,7 +68,7 @@ tasks.matching { it.name == "assembleDebug" }.configureEach {
 
 dependencies {
     implementation("su.grinev:jbson:0.6.4")
-    compileOnly("org.projectlombok:lombok:1.18.30")
+    compileOnly("org.projectlombok:lombok:1.18.44")
     annotationProcessor("org.projectlombok:lombok:1.18.30")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation(libs.appcompat)
