@@ -238,7 +238,9 @@ public class VpnClient {
             synchronized (this) {
                 this.wait(1000);
             }
-            DebugLog.log("Waiting " + timeout + "sec");
+            if (timeout == 1 || timeout % 5 == 0) {
+                DebugLog.log("Reconnect in " + (TIMEOUT - timeout) + "s...");
+            }
             return;
         }
 
@@ -420,8 +422,7 @@ public class VpnClient {
     }
 
     private void handleError() {
-        DebugLog.log("handleError called from: " + Thread.currentThread().getName()
-                + "\n" + android.util.Log.getStackTraceString(new Throwable("handleError trace")));
+        DebugLog.log("handleError: " + Thread.currentThread().getName());
         keepAliveManager.stop();
         synchronized (stateLock) {
             if (state == SHUTDOWN) return;

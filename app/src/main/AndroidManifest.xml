@@ -23,6 +23,7 @@
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
+        android:enableOnBackInvokedCallback="true"
         android:theme="@style/Theme.MyVpn">
 
         <activity
@@ -42,6 +43,7 @@
         <activity
             android:name=".TrafficActivity"
             android:exported="false"
+            android:theme="@style/Theme.MyVpn.Traffic"
             android:parentActivityName=".MainActivity"/>
 
         <activity

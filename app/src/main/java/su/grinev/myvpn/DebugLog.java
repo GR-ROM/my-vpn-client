@@ -57,8 +57,12 @@ public final class DebugLog {
     }
 
     private static void notifyListeners() {
+        String snapshot;
+        synchronized (buffer) {
+            snapshot = buffer.toString();
+        }
         for (Listener l : listeners) {
-            l.onLog(buffer.toString());
+            l.onLog(snapshot);
         }
     }
 
@@ -69,6 +73,7 @@ public final class DebugLog {
     public static void log(String msg) {
         Log.d("MyVPN", msg);
 
+        String snapshot;
         synchronized (buffer) {
             reusableDate.setTime(System.currentTimeMillis());
             lineBuilder.setLength(0);
@@ -81,10 +86,11 @@ public final class DebugLog {
             if (buffer.length() > 64_000) {
                 buffer.delete(0, buffer.length() - 32_000);
             }
+            snapshot = buffer.toString();
         }
 
         for (Listener l : listeners) {
-            l.onLog(buffer.toString());
+            l.onLog(snapshot);
         }
     }
 

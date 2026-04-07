@@ -2,7 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
-val appVersion = "0.7.0"
+val appVersion = "0.7.1"
 val buildNumberFile = file("build-number.txt")
 val buildNumber = if (buildNumberFile.exists()) buildNumberFile.readText().trim().toInt() else 0
 
@@ -13,7 +13,7 @@ android {
     defaultConfig {
         applicationId = "su.grinev.myvpn"
         minSdk = 29
-        targetSdk = 34
+        targetSdk = 36
 
         versionCode = buildNumber
         versionName = appVersion
@@ -21,12 +21,23 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = file("${System.getProperty("user.home")}/.android/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         debug {
             versionNameSuffix = "-snapshot.$buildNumber"
         }
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

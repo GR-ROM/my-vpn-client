@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
@@ -31,7 +32,7 @@ public class TrafficStatsManager {
     private final Map<Consumer<TrafficStats>, Integer> listenerIds = new ConcurrentHashMap<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Runnable updateRunnable = this::computeAndNotify;
-    private volatile boolean isRunning = false;
+    private final AtomicBoolean isRunning = new AtomicBoolean(false);
 
     private TrafficStatsManager() {
     }
@@ -44,8 +45,7 @@ public class TrafficStatsManager {
      * Start the periodic rate computation.
      */
     public void start() {
-        if (!isRunning) {
-            isRunning = true;
+        if (isRunning.compareAndSet(false, true)) {
             lastIncomingBytes.set(incomingBytes.get());
             lastOutgoingBytes.set(outgoingBytes.get());
             mainHandler.postDelayed(updateRunnable, UPDATE_INTERVAL_MS);
@@ -56,7 +56,7 @@ public class TrafficStatsManager {
      * Stop the periodic rate computation.
      */
     public void stop() {
-        isRunning = false;
+        isRunning.set(false);
         mainHandler.removeCallbacks(updateRunnable);
     }
 
@@ -137,7 +137,7 @@ public class TrafficStatsManager {
     }
 
     private void computeAndNotify() {
-        if (!isRunning) return;
+        if (!isRunning.get()) return;
 
         long currentIncoming = incomingBytes.get();
         long currentOutgoing = outgoingBytes.get();
@@ -166,7 +166,7 @@ public class TrafficStatsManager {
         }
 
         // Schedule next update
-        if (isRunning) {
+        if (isRunning.get()) {
             mainHandler.postDelayed(updateRunnable, UPDATE_INTERVAL_MS);
         }
     }
