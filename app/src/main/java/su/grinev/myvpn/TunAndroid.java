@@ -3,12 +3,17 @@ package su.grinev.myvpn;
 import android.content.pm.PackageManager;
 import android.net.VpnService;
 import android.os.ParcelFileDescriptor;
+import android.system.ErrnoException;
+import android.system.Os;
+import android.system.OsConstants;
+import android.system.StructPollfd;
 
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.util.Set;
 
 import lombok.Getter;
 
@@ -25,7 +30,7 @@ public class TunAndroid implements Tun {
     }
 
     @Override
-    public void configureTun(String ip, String gateway, String dnsServer, boolean defaultRouteViaVpn) throws IOException {
+    public void configureTun(String ip, String gateway, String dnsServer, boolean defaultRouteViaVpn, Set<String> excludedApps) throws IOException {
         VpnService.Builder builder;
         try {
             builder = vpnService.new Builder()
@@ -35,6 +40,14 @@ public class TunAndroid implements Tun {
                     .addDnsServer(gateway);
         } catch (PackageManager.NameNotFoundException e) {
             throw new RuntimeException(e);
+        }
+        for (String pkg : excludedApps) {
+            try {
+                builder.addDisallowedApplication(pkg);
+                DebugLog.log("Excluded from VPN: " + pkg);
+            } catch (PackageManager.NameNotFoundException e) {
+                DebugLog.log("Excluded app not found, skipping: " + pkg);
+            }
         }
         DebugLog.log("Set tun IP: " + ip);
         if (defaultRouteViaVpn) {
@@ -82,6 +95,18 @@ public class TunAndroid implements Tun {
     @Override
     public int readPacket(ByteBuffer buf) throws IOException {
         if (readChannel != null) {
+            StructPollfd[] fds = {new StructPollfd()};
+            fds[0].fd = tunFd.getFileDescriptor();
+            fds[0].events = (short) OsConstants.POLLIN;
+            try {
+                int result = Os.poll(fds, 500); // 500ms timeout to allow clean shutdown
+                if (result <= 0 || (fds[0].revents & OsConstants.POLLIN) == 0) {
+                    return 0;
+                }
+            } catch (ErrnoException e) {
+                if (e.errno == OsConstants.EINTR) return 0;
+                throw new IOException("poll failed on TUN fd", e);
+            }
             buf.clear();
             return readChannel.read(buf);
         } else {

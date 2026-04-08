@@ -7,12 +7,18 @@ import android.graphics.drawable.Drawable;
 import android.graphics.drawable.TransitionDrawable;
 import android.net.VpnService;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.View;
 import android.view.animation.AccelerateDecelerateInterpolator;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
 
 import java.util.function.Consumer;
 
@@ -33,15 +39,30 @@ public class MainActivity extends AppCompatActivity {
     private final Consumer<State> stateListener = this::updateUI;
     private ObjectAnimator pulseAnimator;
     private int currentBgResId = R.drawable.btn_disconnected;
+    private final Handler logHandler = new Handler(Looper.getMainLooper());
+    private volatile String pendingLogText;
+    private boolean logUpdateScheduled = false;
+    private static final long LOG_UPDATE_INTERVAL_MS = 250;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
 
         initializeDependencies();
 
         binding = ActivityMainBinding.inflate(getLayoutInflater());
         setContentView(binding.getRoot());
+
+        // Apply bottom inset to content area so the log is not obscured by the nav bar.
+        // Top inset is handled by CoordinatorLayout + AppBarLayout (fitsSystemWindows in XML).
+        int contentPaddingBottom = binding.contentLayout.getPaddingBottom();
+        ViewCompat.setOnApplyWindowInsetsListener(binding.contentLayout, (v, insets) -> {
+            Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
+            v.setPadding(v.getPaddingLeft(), v.getPaddingTop(), v.getPaddingRight(),
+                    contentPaddingBottom + bars.bottom);
+            return insets;
+        });
         binding.connectButton.setOnClickListener(this::onConnectClicked);
         binding.settingsButton.setOnClickListener(v -> openSettings());
         binding.trafficButton.setOnClickListener(v -> openTraffic());
@@ -49,10 +70,20 @@ public class MainActivity extends AppCompatActivity {
 
         DebugLog.printSplash(BuildConfig.VERSION_NAME);
 
-        DebugLog.observe(text -> runOnUiThread(() -> {
-            binding.logView.setText(text);
-            binding.logScrollView.post(() -> binding.logScrollView.fullScroll(View.FOCUS_DOWN));
-        }));
+        DebugLog.observe(text -> {
+            pendingLogText = text;
+            if (!logUpdateScheduled) {
+                logUpdateScheduled = true;
+                logHandler.postDelayed(() -> {
+                    logUpdateScheduled = false;
+                    String t = pendingLogText;
+                    if (t != null) {
+                        binding.logView.setText(t);
+                        binding.logScrollView.post(() -> binding.logScrollView.fullScroll(View.FOCUS_DOWN));
+                    }
+                }, LOG_UPDATE_INTERVAL_MS);
+            }
+        });
 
         updateUI(State.DISCONNECTED);
     }

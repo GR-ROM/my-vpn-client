@@ -1,4 +1,16 @@
 # Add project specific ProGuard rules here.
+
+# JBson — keep all model DTOs (uses @Tag/@Type annotations + reflection)
+-keep class su.grinev.model.** { *; }
+-keepattributes *Annotation*
+
+# Lombok — compile-time only, suppress R8 warnings about missing classes
+-dontwarn lombok.**
+-dontwarn javax.annotation.processing.**
+
+# ZXing
+-keep class com.journeyapps.** { *; }
+-keep class com.google.zxing.** { *; }
 # You can control the set of applied configuration files using the
 # proguardFiles setting in build.gradle.
 #

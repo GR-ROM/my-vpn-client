@@ -44,6 +44,21 @@
     <string name="settings_error_required">Обязательное поле</string>
     <string name="settings_error_port">Порт должен быть от 1 до 65535</string>
 
+    <!-- Excluded apps -->
+    <string name="excluded_apps_title">Обход VPN</string>
+    <string name="excluded_apps_bypassed_header">Приложения в обходе</string>
+    <string name="excluded_apps_empty">Нет приложений в обходе</string>
+    <string name="excluded_apps_search">Поиск приложений…</string>
+    <string name="excluded_apps_find">Найти</string>
+    <string name="excluded_apps_icon_desc">Иконка приложения</string>
+    <string name="excluded_apps_add_desc">Добавить в обход</string>
+    <string name="excluded_apps_remove_desc">Убрать из обхода</string>
+    <string name="settings_excluded_apps">Обход VPN для приложений…</string>
+    <string name="excluded_apps_reconnect_title">Переподключить VPN?</string>
+    <string name="excluded_apps_reconnect_message">Изменения вступят в силу после переподключения. Переподключить сейчас?</string>
+    <string name="excluded_apps_reconnect_now">Переподключить</string>
+    <string name="excluded_apps_reconnect_later">Позже</string>
+
     <!-- Traffic -->
     <string name="traffic_title">Статистика трафика</string>
     <string name="incoming">Входящий</string>

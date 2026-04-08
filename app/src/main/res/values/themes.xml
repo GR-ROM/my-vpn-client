@@ -6,4 +6,10 @@
     </style>
 
     <style name="Theme.MyVpn" parent="Base.Theme.MyVpn" />
+
+    <!-- Traffic screen uses a fully dark window so the status bar area
+         blends seamlessly with the dark toolbar when edge-to-edge is active. -->
+    <style name="Theme.MyVpn.Traffic" parent="Theme.MyVpn">
+        <item name="android:windowBackground">#1a1a2e</item>
+    </style>
 </resources>

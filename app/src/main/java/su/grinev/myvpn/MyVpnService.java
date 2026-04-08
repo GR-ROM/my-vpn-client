@@ -24,6 +24,7 @@ import su.grinev.pool.PoolFactory;
 public class MyVpnService extends VpnService implements ScreenStateHandler.ScreenStateCallback {
 
     public static final String ACTION_DISCONNECT = "su.grinev.myvpn.DISCONNECT";
+    public static final String ACTION_RECONNECT = "su.grinev.myvpn.RECONNECT";
     private SettingsProvider settingsProvider;
     private VpnNotificationManager notificationManager;
     private ScreenStateHandler screenStateHandler;
@@ -59,8 +60,7 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
     @Override
     public void onCreate() {
         super.onCreate();
-        Log.d("MyVPN", "onCreate: entry, SDK=" + Build.VERSION.SDK_INT
-                + " (" + Build.VERSION.RELEASE + "), device=" + Build.MANUFACTURER + " " + Build.MODEL);
+        Log.d("MyVPN", "onCreate: entry, SDK=" + Build.VERSION.SDK_INT + " (" + Build.VERSION.RELEASE + "), device=" + Build.MANUFACTURER + " " + Build.MODEL);
 
         try {
             stateManager = VpnStateManager.getInstance();
@@ -69,15 +69,12 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
             Log.e("MyVPN", "onCreate: singleton init failed", e);
         }
 
-        // Call startForeground ASAP to avoid ForegroundServiceDidNotStartInTimeException
         try {
             notificationManager = new VpnNotificationManager(this, ACTION_DISCONNECT, MyVpnService.class);
             android.app.Notification notification = notificationManager.buildNotification(R.string.notif_starting);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 Log.d("MyVPN", "onCreate: startForeground with FOREGROUND_SERVICE_TYPE_SPECIAL_USE");
-                startForeground(VpnNotificationManager.getNotificationId(),
-                        notification,
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+                startForeground(VpnNotificationManager.getNotificationId(), notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
             } else {
                 Log.d("MyVPN", "onCreate: startForeground (legacy, no type)");
                 startForeground(VpnNotificationManager.getNotificationId(), notification);
@@ -90,11 +87,8 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        DebugLog.log("onStartCommand: entry, SDK=" + Build.VERSION.SDK_INT
-                + " (" + Build.VERSION.RELEASE + "), device=" + Build.MANUFACTURER + " " + Build.MODEL);
-        DebugLog.log("onStartCommand: intent=" + intent
-                + ", action=" + (intent != null ? intent.getAction() : "null")
-                + ", flags=" + flags + ", startId=" + startId);
+        DebugLog.log("onStartCommand: entry, SDK=" + Build.VERSION.SDK_INT + " (" + Build.VERSION.RELEASE + "), device=" + Build.MANUFACTURER + " " + Build.MODEL);
+        DebugLog.log("onStartCommand: intent=" + intent + ", action=" + (intent != null ? intent.getAction() : "null") + ", flags=" + flags + ", startId=" + startId);
 
         try {
             DebugLog.log("onStartCommand: initializing dependencies");
@@ -111,6 +105,12 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
             wasConnectedBeforeSleep = false;
             CompletableFuture.runAsync(this::stopVpnSync, executor);
             return START_NOT_STICKY;
+        }
+
+        if (intent != null && ACTION_RECONNECT.equals(intent.getAction())) {
+            DebugLog.log("onStartCommand: RECONNECT action received");
+            reconnect();
+            return START_STICKY;
         }
 
         try {
@@ -172,6 +172,7 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
                     settingsProvider.getServerPort(),
                     settingsProvider.getJwt(),
                     true,
+                    settingsProvider.getExcludedApps(),
                     getPoolFactory(),
                     this::onVpnStateChanged
             );

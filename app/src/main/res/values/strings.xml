@@ -43,6 +43,21 @@
     <string name="settings_error_required">This field is required</string>
     <string name="settings_error_port">Port must be 1-65535</string>
 
+    <!-- Excluded apps -->
+    <string name="excluded_apps_title">Bypass VPN</string>
+    <string name="excluded_apps_bypassed_header">Bypassed apps</string>
+    <string name="excluded_apps_empty">No apps bypassed yet</string>
+    <string name="excluded_apps_search">Search apps…</string>
+    <string name="excluded_apps_find">Find</string>
+    <string name="excluded_apps_icon_desc">App icon</string>
+    <string name="excluded_apps_add_desc">Add to bypass</string>
+    <string name="excluded_apps_remove_desc">Remove from bypass</string>
+    <string name="settings_excluded_apps">Bypass VPN for apps…</string>
+    <string name="excluded_apps_reconnect_title">Reconnect VPN?</string>
+    <string name="excluded_apps_reconnect_message">Changes take effect after reconnecting. Reconnect now?</string>
+    <string name="excluded_apps_reconnect_now">Reconnect</string>
+    <string name="excluded_apps_reconnect_later">Later</string>
+
     <!-- Traffic -->
     <string name="traffic_title">Traffic Statistics</string>
     <string name="incoming">Incoming</string>

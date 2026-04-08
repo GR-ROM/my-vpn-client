@@ -2,7 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
-val appVersion = "0.7.0"
+val appVersion = "0.7.1"
 val buildNumberFile = file("build-number.txt")
 val buildNumber = if (buildNumberFile.exists()) buildNumberFile.readText().trim().toInt() else 0
 
@@ -13,7 +13,7 @@ android {
     defaultConfig {
         applicationId = "su.grinev.myvpn"
         minSdk = 29
-        targetSdk = 34
+        targetSdk = 36
 
         versionCode = buildNumber
         versionName = appVersion
@@ -21,12 +21,23 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = file("${System.getProperty("user.home")}/.android/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         debug {
             versionNameSuffix = "-snapshot.$buildNumber"
         }
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -57,7 +68,7 @@ tasks.matching { it.name == "assembleDebug" }.configureEach {
 
 dependencies {
     implementation("su.grinev:jbson:0.6.4")
-    compileOnly("org.projectlombok:lombok:1.18.30")
+    compileOnly("org.projectlombok:lombok:1.18.44")
     annotationProcessor("org.projectlombok:lombok:1.18.30")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation(libs.appcompat)
@@ -66,6 +77,7 @@ dependencies {
     implementation(libs.navigation.fragment)
     implementation(libs.navigation.ui)
     testImplementation(libs.junit)
+    testImplementation("org.mockito:mockito-core:5.11.0")
     androidTestImplementation(libs.ext.junit)
     androidTestImplementation(libs.espresso.core)
 }
