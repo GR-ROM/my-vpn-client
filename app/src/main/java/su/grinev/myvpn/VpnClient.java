@@ -60,6 +60,8 @@ public class VpnClient {
     public static final int BUFFER_SIZE = 2048;
     private static final int MAX_PACKET_SIZE = 65536;
     private static final int TIMEOUT = 10;
+    private static final int CONNECT_TIMEOUT_MS = 10_000;
+    private static final int SOCKET_READ_TIMEOUT_MS = 30_000;
     private final String serverAddress;
     private final int serverPort;
     private final String jwt;
@@ -257,13 +259,14 @@ public class VpnClient {
                 socketProtector.accept(rawSocket);
                 rawSocket.setTcpNoDelay(true);
                 rawSocket.setKeepAlive(true);
-                rawSocket.connect(new InetSocketAddress(serverAddress, serverPort));
+                rawSocket.setSoTimeout(SOCKET_READ_TIMEOUT_MS);
+                rawSocket.connect(new InetSocketAddress(serverAddress, serverPort), CONNECT_TIMEOUT_MS);
 
                 sslSocket = (SSLSocket) factory.createSocket(rawSocket, serverAddress, serverPort, true);
                 sslSocket.setEnabledProtocols(new String[]{"TLSv1.3"});
                 sslSocket.setEnabledCipherSuites(new String[]{ "TLS_AES_128_GCM_SHA256", "TLS_AES_256_GCM_SHA384"});
                 sslSocket.setUseClientMode(true);
-                sslSocket.setSoTimeout(30 * 1000);
+                sslSocket.setSoTimeout(SOCKET_READ_TIMEOUT_MS);
                 sslSocket.startHandshake();
                 DebugLog.log("TLS handshake complete");
 
@@ -504,6 +507,23 @@ public class VpnClient {
 
     private void closeConnection() {
         DebugLog.log("[CLOSE] closeConnection called from " + Thread.currentThread().getName());
+
+        // Close the socket FIRST, outside of outputLock. Socket.close() is thread-safe and
+        // is the only way to unblock a writer thread stuck in codec.serialize(...) while
+        // holding outputLock — if we waited for the lock here we'd deadlock against it.
+        SSLSocket localSocket = socket;
+        if (localSocket != null) {
+            try {
+                localSocket.close();
+            } catch (IOException ignored) {}
+        }
+        Socket localRawSocket = rawSocket;
+        if (localRawSocket != null) {
+            try {
+                localRawSocket.close();
+            } catch (IOException ignored) {}
+        }
+
         synchronized (outputLock) {
             if (serverOutputStream != null) {
                 try {
@@ -519,12 +539,7 @@ public class VpnClient {
                 serverInputStream = null;
             }
 
-            if (socket != null) {
-                try {
-                    socket.close();
-                } catch (IOException ignored) {}
-                socket = null;
-            }
+            socket = null;
             rawSocket = null;
         }
     }

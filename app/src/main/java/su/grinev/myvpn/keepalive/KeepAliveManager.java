@@ -3,6 +3,7 @@ package su.grinev.myvpn.keepalive;
 import java.io.DataOutputStream;
 import java.time.Instant;
 import java.io.IOException;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -21,7 +22,7 @@ public class KeepAliveManager {
     public interface KeepAliveCallback { void onConnectionDead(); }
     private static final Instant FIXED_TIMESTAMP = Instant.now();
     private static final long KEEPALIVE_INTERVAL_MS = 30000; // 30 seconds
-    private static final long PONG_TIMEOUT_MS = 10000; // 10 seconds to wait for PONG
+    private static final long PONG_TIMEOUT_MS = 15000; // 15 seconds to wait for PONG
     private static final long CHECK_INTERVAL_MS = 5000; // Check every 5 seconds
     private final Object lock;
     private final Codec codec;
@@ -34,6 +35,12 @@ public class KeepAliveManager {
 
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r, "KeepAliveThread");
+        t.setDaemon(true);
+        return t;
+    });
+    // Writes run on a dedicated thread so a stalled TCP write cannot block the watchdog scheduler.
+    private final ExecutorService writeExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "KeepAliveWriter");
         t.setDaemon(true);
         return t;
     });
@@ -85,6 +92,7 @@ public class KeepAliveManager {
     public void destroy() {
         stop();
         scheduler.shutdown();
+        writeExecutor.shutdownNow();
         try {
             if (!scheduler.awaitTermination(500, TimeUnit.MILLISECONDS)) {
                 scheduler.shutdownNow();
@@ -118,8 +126,9 @@ public class KeepAliveManager {
             if (timeSincePing > PONG_TIMEOUT_MS) {
                 DebugLog.log("PONG timeout after " + timeSincePing + "ms, connection dead");
                 awaitingPong.set(false);
-                isRunning.set(false);
-                callback.onConnectionDead();
+                if (isRunning.compareAndSet(true, false)) {
+                    callback.onConnectionDead();
+                }
                 return;
             }
         }
@@ -133,21 +142,25 @@ public class KeepAliveManager {
             return;
         }
 
-        try {
-            pingPacketDto.setTimestamp(FIXED_TIMESTAMP);
+        // Arm watchdog BEFORE submitting the write so a stuck socket write is still detected
+        // via PONG_TIMEOUT_MS. The actual write runs on writeExecutor so the scheduler can
+        // keep ticking and trigger onConnectionDead → socket close, which unblocks the write.
+        pingSentTime.set(System.currentTimeMillis());
+        awaitingPong.set(true);
 
-            synchronized (lock) {
-                codec.serialize(pingPacketDto, out);
+        writeExecutor.submit(() -> {
+            try {
+                pingPacketDto.setTimestamp(FIXED_TIMESTAMP);
+                synchronized (lock) {
+                    codec.serialize(pingPacketDto, out);
+                }
+                DebugLog.log("PING sent");
+            } catch (IOException | RuntimeException e) {
+                DebugLog.log("Failed to send PING: " + e.getMessage());
+                if (isRunning.compareAndSet(true, false)) {
+                    callback.onConnectionDead();
+                }
             }
-
-            pingSentTime.set(System.currentTimeMillis());
-            awaitingPong.set(true);
-            DebugLog.log("PING sent");
-
-        } catch (IOException e) {
-            DebugLog.log("Failed to send PING: " + e.getMessage());
-            isRunning.set(false);
-            callback.onConnectionDead();
-        }
+        });
     }
 }
