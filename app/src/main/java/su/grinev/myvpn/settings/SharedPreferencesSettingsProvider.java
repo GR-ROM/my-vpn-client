@@ -13,8 +13,8 @@ public class SharedPreferencesSettingsProvider implements SettingsProvider {
     public static final String KEY_SERVER_PORT = "server_port";
     public static final String KEY_JWT = "jwt";
     public static final String KEY_EXCLUDED_APPS = "excluded_apps";
-    public static final String DEFAULT_SERVER_IP = "178.253.22.137";
-    public static final int DEFAULT_SERVER_PORT = 8443;
+    public static final String DEFAULT_SERVER_IP = "87.106.204.29";
+    public static final int DEFAULT_SERVER_PORT = 443;
     public static final String DEFAULT_JWT = "";
 
     private final SharedPreferences prefs;
