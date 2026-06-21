@@ -2,10 +2,84 @@ package su.grinev.myvpn;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+import java.nio.ByteBuffer;
 
 public class NetUtils {
     public static final int PROTOCOL_TCP = 6;
     public static final int PROTOCOL_UDP = 17;
+
+    /**
+     * 5-tuple flow hash (srcIp, dstIp, proto, srcPort, dstPort) used for session affinity in
+     * multisession mode. Byte-identical to the desktop client's {@code NetUtils.fiveTupleHash} and
+     * the server's flow hash so client and server agree on which session a flow maps to. The packet's
+     * position/limit are not modified (absolute {@code getInt}/{@code get} only).
+     */
+    public static int fiveTupleHash(ByteBuffer packet) {
+        int base = packet.position();
+        int len = packet.limit() - base;
+        if (len < 1) return 0;
+
+        int version = (packet.get(base) >>> 4) & 0xF;
+
+        if (version == 4) {
+            return fiveTupleHashIpv4(packet, base, len);
+        } else if (version == 6) {
+            return fiveTupleHashIpv6(packet, base, len);
+        }
+        return 0;
+    }
+
+    private static int fiveTupleHashIpv4(ByteBuffer packet, int base, int len) {
+        if (len < 20) return 0;
+
+        int srcIp = packet.getInt(base + 12);
+        int dstIp = packet.getInt(base + 16);
+        int proto = packet.get(base + 9) & 0xFF;
+
+        int srcPort = 0;
+        int dstPort = 0;
+        if (proto == PROTOCOL_TCP || proto == PROTOCOL_UDP) {
+            int ihl = (packet.get(base) & 0x0F) * 4;
+            if (len >= ihl + 4) {
+                srcPort = ((packet.get(base + ihl) & 0xFF) << 8) | (packet.get(base + ihl + 1) & 0xFF);
+                dstPort = ((packet.get(base + ihl + 2) & 0xFF) << 8) | (packet.get(base + ihl + 3) & 0xFF);
+            }
+        }
+
+        int hash = srcIp;
+        hash = hash * 31 + dstIp;
+        hash = hash * 31 + proto;
+        hash = hash * 31 + srcPort;
+        hash = hash * 31 + dstPort;
+        return hash;
+    }
+
+    private static int fiveTupleHashIpv6(ByteBuffer packet, int base, int len) {
+        if (len < 40) return 0;
+
+        int proto = packet.get(base + 6) & 0xFF;
+
+        // hash all 16 bytes of src + dst address (offsets 8..23 and 24..39)
+        int hash = 0;
+        for (int i = 8; i < 40; i += 4) {
+            hash = hash * 31 + packet.getInt(base + i);
+        }
+        hash = hash * 31 + proto;
+
+        int srcPort = 0;
+        int dstPort = 0;
+        if (proto == PROTOCOL_TCP || proto == PROTOCOL_UDP) {
+            int transportOffset = base + 40;
+            if (len >= 44) {
+                srcPort = ((packet.get(transportOffset) & 0xFF) << 8) | (packet.get(transportOffset + 1) & 0xFF);
+                dstPort = ((packet.get(transportOffset + 2) & 0xFF) << 8) | (packet.get(transportOffset + 3) & 0xFF);
+            }
+        }
+
+        hash = hash * 31 + srcPort;
+        hash = hash * 31 + dstPort;
+        return hash;
+    }
 
     public static boolean isTcpOrUdp(byte[] packet) {
         return (packet[9] & 0xFF) == PROTOCOL_TCP || (packet[9] & 0xFF) == PROTOCOL_UDP;

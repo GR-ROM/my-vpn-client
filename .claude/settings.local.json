@@ -33,7 +33,13 @@
       "Bash(echo \"exit: $?\")",
       "Bash(powershell.exe -Command \"& { .\\\\gradlew.bat assembleDebug 2>&1 | Out-String }\")",
       "Bash(powershell.exe:*)",
-      "Bash(kill %1)"
+      "Bash(kill %1)",
+      "Read(//c/Users/rgrin/AndroidStudioProjects/**)",
+      "Read(//c/Users/rgrin/IdeaProjects/**)",
+      "Read(//c/Users/rgrin/**)",
+      "PowerShell(.\\\\gradlew.bat testDebugUnitTest --tests \"su.grinev.myvpn.MultisessionBalancerTest\" --console=plain 2>&1 | Select-Object -Last 40)",
+      "PowerShell(.\\\\gradlew.bat testDebugUnitTest --tests \"su.grinev.myvpn.MultisessionBalancerTest\" --console=plain 2>&1 | Select-Object -Last 20)",
+      "PowerShell(.\\\\gradlew.bat assembleDebug --console=plain 2>&1 | Select-Object -Last 30)"
     ]
   }
 }

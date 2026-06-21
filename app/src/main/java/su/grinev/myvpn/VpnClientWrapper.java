@@ -3,8 +3,12 @@ package su.grinev.myvpn;
 import static su.grinev.myvpn.NetUtils.intToIpv4;
 import static su.grinev.myvpn.VpnClient.BUFFER_SIZE;
 
+import android.net.VpnService;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.function.Consumer;
 
@@ -14,10 +18,13 @@ import su.grinev.pool.PoolFactory;
 
 public class VpnClientWrapper extends TunHandler {
     private final Tun tun;
-    private final VpnClient vpnClient;
+    private final List<VpnClient> vpnClients = new ArrayList<>();
     private final boolean defaultRouteViaVpn;
     private final Set<String> excludedApps;
     private final TrafficStatsManager trafficStats = TrafficStatsManager.getInstance();
+    // Reusable liveness snapshot for session selection (onTunPacketReceived is single-producer: the
+    // TunHandler reader thread), so no per-packet allocation.
+    private final boolean[] liveScratch;
 
     public VpnClientWrapper(
             TunAndroid tun,
@@ -33,11 +40,10 @@ public class VpnClientWrapper extends TunHandler {
         this.tun = tun;
         this.defaultRouteViaVpn = defaultRouteViaVpn;
         this.excludedApps = excludedApps;
-        android.net.VpnService vpnService = tun.getVpnService();
-        this.vpnClient = new VpnClient(serverAddress, serverPort, jwt, this::onClientPacketReceived, this::onIpAssigned, poolFactory, onStateChange, s -> {
-            boolean ok = vpnService.protect(s);
-            DebugLog.log("protect(socket) returned " + ok);
-        });
+        VpnService vpnService = tun.getVpnService();
+        this.vpnClients.add(new VpnClient(serverAddress, serverPort, jwt, this::onClientPacketReceived, this::onIpAssigned, poolFactory, onStateChange, vpnService::protect, bufferPool::release));
+        this.vpnClients.add(new VpnClient(serverAddress, serverPort, jwt, this::onClientPacketReceived, this::onIpAssigned, poolFactory, onStateChange, vpnService::protect, bufferPool::release));
+        this.liveScratch = new boolean[vpnClients.size()];
     }
 
     private void onIpAssigned(VpnIpResponseDto vpnIpResponseDto) {
@@ -51,7 +57,7 @@ public class VpnClientWrapper extends TunHandler {
             );
             // Re-protect socket after tunnel is established.
             // On Android 10, protect() before tunnel may not persist.
-            vpnClient.reprotectSocket();
+            vpnClients.forEach(VpnClient::reprotectSocket);
             if (!super.running) {
                 super.start();
             }
@@ -62,29 +68,59 @@ public class VpnClientWrapper extends TunHandler {
 
     public void stop() {
         super.stop();
-
-        vpnClient.stop();
+        vpnClients.forEach(VpnClient::stop);
         tun.close();
     }
 
     public boolean isConnectionAlive() {
-        return vpnClient.getState() == State.LIVE && vpnClient.isSocketConnected();
+        return vpnClients.stream().anyMatch(c -> c.getState() == State.LIVE && c.isSocketConnected());
     }
 
     public void pauseKeepAlive() {
-        vpnClient.pauseKeepAlive();
+        vpnClients.forEach(VpnClient::pauseKeepAlive);
     }
 
     public void resumeKeepAlive() {
-        vpnClient.resumeKeepAlive();
+        vpnClients.forEach(VpnClient::resumeKeepAlive);
     }
 
     @Override
-    public void onTunPacketReceived(ByteBuffer packet) {
-        if (vpnClient.getState() == State.LIVE) {
-            trafficStats.addOutgoingBytes(packet.remaining());
-            vpnClient.sendToServer(packet);
+    public boolean onTunPacketReceived(ByteBuffer packet) {
+        VpnClient vpnClient = selectLiveSession(NetUtils.fiveTupleHash(packet));
+        if (vpnClient == null) {
+            return false;   // no live session — not handed off, TunHandler releases the buffer
         }
+
+        trafficStats.addOutgoingBytes(packet.remaining());
+        vpnClient.sendToServer(packet);   // takes ownership of packet
+        return true;
+    }
+
+    private VpnClient selectLiveSession(int hash) {
+        for (int i = 0; i < vpnClients.size(); i++) {
+            liveScratch[i] = vpnClients.get(i).getState() == State.LIVE;
+        }
+        int idx = selectLiveSession(hash, liveScratch);
+        return idx < 0 ? null : vpnClients.get(idx);
+    }
+
+    /**
+     * Select the session index for a flow: hash modulo the total session count, and if that target
+     * session is live, pin the flow to it. Only if the target is dead does the flow spill to the
+     * first live session (ascending index order) — so a session going down moves only its own flows,
+     * not everyone's. Returns -1 if no session is live.
+     */
+    static int selectLiveSession(int hash, boolean[] live) {
+        int target = Math.floorMod(hash, live.length);
+        if (live[target]) {
+            return target;
+        }
+        for (int i = 0; i < live.length; i++) {
+            if (live[i]) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     public void onClientPacketReceived(ByteBuffer packet) {

@@ -22,14 +22,17 @@ public abstract class TunHandler {
         try {
             while (!stop) {
                 ByteBuffer buf = bufferPool.get();
+                boolean handed = false;
                 try {
                     int bytesRead = tun.readPacket(buf);
                     if (bytesRead > 20) {
                         buf.flip();
-                        onTunPacketReceived(buf);
+                        handed = onTunPacketReceived(buf);   // true if the consumer took ownership
                     }
                 } finally {
-                    bufferPool.release(buf);
+                    if (!handed) {
+                        bufferPool.release(buf);
+                    }
                 }
             }
         } catch (IOException ioException) {
@@ -37,7 +40,8 @@ public abstract class TunHandler {
         }
     }
 
-    public abstract void onTunPacketReceived(ByteBuffer packet);
+    /** Returns true if the consumer took ownership of {@code packet} (caller must not release it). */
+    public abstract boolean onTunPacketReceived(ByteBuffer packet);
 
     protected synchronized void start() {
         readerThread.start();

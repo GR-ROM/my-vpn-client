@@ -31,7 +31,11 @@ import java.security.KeyManagementException;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -104,6 +108,18 @@ public class VpnClient {
     private final byte[] readBuffer = new byte[MAX_PACKET_SIZE];
     private final ByteBuffer readByteBuffer = ByteBuffer.wrap(readBuffer);
 
+    // Upload batching (mirrors the server/desktop pattern): the TUN reader hands pooled buffers
+    // off here (ownership transfer); a dedicated writer thread drains a batch, packs all frames
+    // into one buffer, does a single write + flush, then releases every buffer back to the pool
+    // (dispose by the new owner). Coalescing many IP packets into one TLS write lifts upload
+    // throughput vs one record/flush per packet.
+    private static final int MAX_SEND_BATCH = 32;
+    private static final int SEND_QUEUE_CAPACITY = 512;
+    private final BlockingQueue<ByteBuffer> sendQueue = new ArrayBlockingQueue<>(SEND_QUEUE_CAPACITY);
+    private final byte[] sendBatchScratch = new byte[MAX_SEND_BATCH * (MAX_MTU + 32)];
+    private final Consumer<ByteBuffer> bufferReleaser;
+    private final ExecutorService sendExecutor;
+
     private static final Instant FIXED_TIMESTAMP = Instant.now();
 
     public VpnClient(
@@ -114,8 +130,10 @@ public class VpnClient {
             Consumer<VpnIpResponseDto> onIpAssigned,
             PoolFactory poolFactory,
             Consumer<State> onStateChange,
-            Consumer<java.net.Socket> socketProtector) throws IOException, InterruptedException {
+            Consumer<Socket> socketProtector,
+            Consumer<ByteBuffer> bufferReleaser) throws IOException, InterruptedException {
         this.jwt = jwt;
+        this.bufferReleaser = bufferReleaser;
         this.onClientPacketHandler = onClientPacket;
         this.serverAddress = serverAddress;
         this.serverPort = serverPort;
@@ -138,7 +156,7 @@ public class VpnClient {
 
         loginRequestDto.setCommand(Command.LOGIN);
         loginRequestDto.setData(loginDto);
-        loginPacketDto.setVer("0.1");
+        loginPacketDto.setVer("0.2");   // negotiate protocol v0.2 with the server at login
         loginPacketDto.setPayload(loginRequestDto);
 
         try {
@@ -173,6 +191,13 @@ public class VpnClient {
         });
 
         CompletableFuture.runAsync(this::runWorkerLoop, executor);
+
+        sendExecutor = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "VpnSendWriter");
+            t.setDaemon(false);
+            return t;
+        });
+        sendExecutor.execute(this::runSendWriter);
     }
 
     private void runWorkerLoop() {
@@ -366,15 +391,31 @@ public class VpnClient {
                         break;
                     }
 
-                    Packet<?> packet;
+                    int len;
                     try {
-                        packet = readPacket(Packet.class);
+                        len = readFrame();
                     } catch (SocketTimeoutException e) {
                         // Socket timeout is benign in LIVE state — KeepAlive handles
                         // dead connection detection. During sleep, no data is expected.
                         continue;
                     }
                     keepAliveManager.onPacketReceived();
+
+                    // v0.2 fast path: minimal FORWARD frame { 0:"0.2", 1:"FWD", 2:<bin> } —
+                    // extract the IP packet straight from readBuffer, no full deserialization.
+                    if (ForwardV2Codec.isForward(readBuffer, len)) {
+                        int off = ForwardV2Codec.packetOffset(readBuffer);
+                        int binLen = ForwardV2Codec.packetLength(readBuffer);
+                        if (off < 0 || binLen > MAX_MTU) {
+                            throw new IOException("Invalid packet length");
+                        }
+                        readByteBuffer.limit(off + binLen).position(off);
+                        onClientPacketHandler.accept(readByteBuffer);
+                        continue;
+                    }
+
+                    readByteBuffer.position(0).limit(len);
+                    Packet<?> packet = codec.deserialize(readByteBuffer, Packet.class);
                     if (packet.getPayload() instanceof ResponseDto<?>) {
                         keepAliveManager.onPongReceived();
                         continue;
@@ -412,7 +453,8 @@ public class VpnClient {
         DebugLog.log("[PROTO] Loop exited, state=" + getState());
     }
 
-    private <T> T readPacket(Class<T> tClass) throws IOException {
+    // Read one length-prefixed frame into readBuffer (length header re-written at [0..4)); returns length.
+    private int readFrame() throws IOException {
         int packetSize = serverInputStream.readInt();
         if (packetSize <= 4 || packetSize > MAX_PACKET_SIZE) { throw new IOException("Invalid packet size: " + packetSize); }
         readBuffer[0] = (byte) (packetSize >> 24);
@@ -420,6 +462,11 @@ public class VpnClient {
         readBuffer[2] = (byte) (packetSize >> 8);
         readBuffer[3] = (byte) packetSize;
         serverInputStream.readFully(readBuffer, 4, packetSize - 4);
+        return packetSize;
+    }
+
+    private <T> T readPacket(Class<T> tClass) throws IOException {
+        int packetSize = readFrame();
         readByteBuffer.position(0).limit(packetSize);
         return codec.deserialize(readByteBuffer, tClass);
     }
@@ -446,22 +493,59 @@ public class VpnClient {
         closeConnection();
     }
 
+    // Called from the TUN reader thread; takes ownership of {@code packet}. It is queued for the
+    // send writer (which releases it after sending) or released here if the queue is full.
     public void sendToServer(ByteBuffer packet) {
-        if (getState() != LIVE) {
-            return;
+        if (!sendQueue.offer(packet)) {
+            bufferReleaser.accept(packet);   // queue full — drop (inner TCP retransmits)
         }
+    }
 
-        sendForwardDto.setPacket(packet);
-        sendPacketDto.setTimestamp(FIXED_TIMESTAMP);
-
-        try {
-            synchronized (outputLock) {
-                codec.serialize(sendPacketDto, serverOutputStream);
+    // Dedicated writer: drain a batch, pack all frames into one buffer, single write + flush
+    // (Conscrypt buffers TLS writes, so the per-batch flush is what pushes them out), then release
+    // every buffer back to the pool.
+    private void runSendWriter() {
+        List<ByteBuffer> batch = new ArrayList<>(MAX_SEND_BATCH);
+        while (getState() != SHUTDOWN) {
+            ByteBuffer first;
+            try {
+                first = sendQueue.take();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
             }
-        } catch (RuntimeException | IOException ex) {
-            DebugLog.log("Send error: " + ex.getClass().getName() + ": " + ex.getMessage()
-                    + "\n" + android.util.Log.getStackTraceString(ex));
-            handleError();
+            batch.add(first);
+            sendQueue.drainTo(batch, MAX_SEND_BATCH - 1);
+            try {
+                writeBatch(batch);
+            } catch (RuntimeException | IOException ex) {
+                DebugLog.log("Send batch error: " + ex.getClass().getName() + ": " + ex.getMessage());
+                handleError();
+            } finally {
+                for (int i = 0; i < batch.size(); i++) {
+                    bufferReleaser.accept(batch.get(i));
+                }
+                batch.clear();
+            }
+        }
+        ByteBuffer leftover;
+        while ((leftover = sendQueue.poll()) != null) {
+            bufferReleaser.accept(leftover);   // release anything left on shutdown
+        }
+    }
+
+    private void writeBatch(List<ByteBuffer> batch) throws IOException {
+        DataOutputStream out = serverOutputStream;
+        if (out == null) {
+            return;   // not connected — buffers released by the caller's finally
+        }
+        int pos = 0;
+        for (int i = 0; i < batch.size(); i++) {
+            pos += ForwardV2Codec.encode(sendBatchScratch, pos, batch.get(i));
+        }
+        synchronized (outputLock) {
+            out.write(sendBatchScratch, 0, pos);
+            out.flush();
         }
     }
 
@@ -469,6 +553,7 @@ public class VpnClient {
         DebugLog.log("Stopping VPN client");
         keepAliveManager.destroy();
         setState(SHUTDOWN);
+        sendExecutor.shutdownNow();   // interrupt the send writer (it drains+releases on exit)
         closeConnection();
 
         executor.shutdown();
