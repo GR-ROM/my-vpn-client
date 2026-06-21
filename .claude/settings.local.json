@@ -39,7 +39,8 @@
       "Read(//c/Users/rgrin/**)",
       "PowerShell(.\\\\gradlew.bat testDebugUnitTest --tests \"su.grinev.myvpn.MultisessionBalancerTest\" --console=plain 2>&1 | Select-Object -Last 40)",
       "PowerShell(.\\\\gradlew.bat testDebugUnitTest --tests \"su.grinev.myvpn.MultisessionBalancerTest\" --console=plain 2>&1 | Select-Object -Last 20)",
-      "PowerShell(.\\\\gradlew.bat assembleDebug --console=plain 2>&1 | Select-Object -Last 30)"
+      "PowerShell(.\\\\gradlew.bat assembleDebug --console=plain 2>&1 | Select-Object -Last 30)",
+      "PowerShell(git *)"
     ]
   }
 }
