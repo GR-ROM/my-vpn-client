@@ -44,6 +44,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
+import javax.net.ssl.SNIHostName;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
@@ -73,6 +74,10 @@ public class VpnClient {
     private static final int MAX_PACKET_SIZE = 65536;
     private static final int TIMEOUT = 10;
     private static final int CONNECT_TIMEOUT_MS = 10_000;
+    /** Cover SNI sent in the ClientHello so it looks like a browser visiting a popular,
+     *  rarely-blocked site (defeats passive SNI filtering + adds the SNI extension to JA3).
+     *  The server ignores SNI and serves its cert; the client is trust-all so the mismatch is fine. */
+    private static final String COVER_SNI = "www.microsoft.com";
     private static final int SOCKET_READ_TIMEOUT_MS = 30_000;
     private final String serverAddress;
     private final int serverPort;
@@ -336,6 +341,7 @@ public class VpnClient {
                 // of the negotiated ALPN value.
                 SSLParameters sslParams = sslSocket.getSSLParameters();
                 sslParams.setApplicationProtocols(new String[]{"h2", "http/1.1"});
+                sslParams.setServerNames(List.of(new SNIHostName(COVER_SNI)));
                 sslSocket.setSSLParameters(sslParams);
                 sslSocket.setSoTimeout(SOCKET_READ_TIMEOUT_MS);
                 sslSocket.startHandshake();
