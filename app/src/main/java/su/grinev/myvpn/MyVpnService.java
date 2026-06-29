@@ -248,6 +248,13 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
             if (vpnClientWrapper != null && vpnClientWrapper.isConnectionAlive()) {
                 wasConnectedBeforeSleep = true;
                 isSleeping = true;
+                // Pause the whole server→client downlink while the screen is off (FLOW_CONTROL STOP on
+                // every connection). MUST run off the main thread: onScreenOff() is a BroadcastReceiver
+                // callback (main thread) and the sends take each session's output lock (held by a worker
+                // during a network write) — doing it inline would block the main thread → ANR → the OS
+                // kills the service. Offload to the executor.
+                final VpnClientWrapper w = vpnClientWrapper;
+                CompletableFuture.runAsync(w::suspendDownlink, executor);
                 vpnClientWrapper.pauseKeepAlive();
                 if (trafficStats != null) {
                     trafficStats.stop();
@@ -269,6 +276,13 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
                 connectionAlive = vpnClientWrapper != null && vpnClientWrapper.isConnectionAlive();
                 if (connectionAlive) {
                     vpnClientWrapper.resumeKeepAlive();
+                    // Resume the downlink on wake by re-applying the multipath flow policy (primary
+                    // starts; the cellular standby stays paused while Wi-Fi is up). Off the main thread
+                    // (onScreenOn is a BroadcastReceiver callback and the sends take each session's
+                    // output lock). Harmless if a session was re-established meanwhile — the server's
+                    // flow defaults to enabled on a fresh login and the policy re-asserts on LIVE.
+                    final VpnClientWrapper w = vpnClientWrapper;
+                    CompletableFuture.runAsync(w::resumeDownlink, executor);
                 }
             }
 

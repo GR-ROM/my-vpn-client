@@ -12,7 +12,9 @@ public enum Command {
     START_FLOW(1040),
     STOP_FLOW(1050),
     PING(1060),
-    PONG(1070);
+    PONG(1070),
+    HELLO(1080),
+    FLOW_CONTROL(1100);
 
     private final int value;
     private static final Map<Integer, Command> commandMap;
@@ -34,7 +36,9 @@ public enum Command {
                 Map.entry(START_FLOW.value, START_FLOW),
                 Map.entry(STOP_FLOW.value, STOP_FLOW),
                 Map.entry(PING.value, PING),
-                Map.entry(PONG.value, PONG)
+                Map.entry(PONG.value, PONG),
+                Map.entry(HELLO.value, HELLO),
+                Map.entry(FLOW_CONTROL.value, FLOW_CONTROL)
         );
     }
 

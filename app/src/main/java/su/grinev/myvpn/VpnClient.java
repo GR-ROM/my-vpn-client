@@ -42,6 +42,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 import javax.net.ssl.SNIHostName;
@@ -72,7 +73,11 @@ import su.grinev.pool.PoolFactory;
 public class VpnClient {
     public static final int BUFFER_SIZE = 2048;
     private static final int MAX_PACKET_SIZE = 65536;
-    private static final int TIMEOUT = 10;
+    // Progressive reconnect backoff (server-unreachable case): 1s, doubling up to 60s. Reset to 1 on a
+    // successful connect or a network-change event (forceReconnect). When there is no network link at
+    // all we don't back off — we park and wake instantly on the next network event.
+    private static final int MIN_BACKOFF_SEC = 1;
+    private static final int MAX_BACKOFF_SEC = 60;
     private static final int CONNECT_TIMEOUT_MS = 10_000;
     /** Cover SNI sent in the ClientHello so it looks like a browser visiting a popular,
      *  rarely-blocked site (defeats passive SNI filtering + adds the SNI extension to JA3).
@@ -89,13 +94,21 @@ public class VpnClient {
     private final Consumer<VpnIpResponseDto> onIpAssigned;
     private final Consumer<State> onStateChange;
     private final Consumer<java.net.Socket> socketProtector;
+    // True when the device has a usable default network link. Lets us distinguish "server unreachable
+    // but link is up" (→ progressive backoff) from "no network at all" (→ park, wake on event). May be
+    // null (legacy: treated as always available). Supplied by VpnClientWrapper / DefaultNetworkMonitor.
+    private final BooleanSupplier networkAvailable;
+    private final String name;   // session label for logs (e.g. "s0"/"s1")
     private final KeepAliveManager keepAliveManager;
     private final Set<State> reconnectableStates = Set.of(DISCONNECTED, WAITING);
     private final Object stateLock = new Object();
     private final Object outputLock = new Object();
     private volatile State state;
     private volatile boolean hasError = false;
-    private int timeout = 0;
+    private volatile int backoffSec = MIN_BACKOFF_SEC;
+    // Set by forceReconnect() (network-change event) to short-circuit the backoff/park: the next
+    // WAITING tick reconnects immediately and resets the backoff. Cleared once consumed.
+    private volatile boolean forceReconnectRequested = false;
     private volatile DataOutputStream serverOutputStream;
     private volatile DataInputStream serverInputStream;
     private volatile SSLSocket socket;
@@ -160,7 +173,9 @@ public class VpnClient {
             PoolFactory poolFactory,
             Consumer<State> onStateChange,
             Consumer<Socket> socketProtector,
-            Consumer<ByteBuffer> bufferReleaser) throws IOException, InterruptedException {
+            Consumer<ByteBuffer> bufferReleaser,
+            BooleanSupplier networkAvailable,
+            String name) throws IOException, InterruptedException {
         this.jwt = jwt;
         this.bufferReleaser = bufferReleaser;
         this.onClientPacketHandler = onClientPacket;
@@ -169,6 +184,8 @@ public class VpnClient {
         this.state = DISCONNECTED;
         this.onIpAssigned = onIpAssigned;
         this.socketProtector = socketProtector;
+        this.networkAvailable = networkAvailable;
+        this.name = name;
         this.codec = Codec.messagePack(poolFactory, BUFFER_SIZE, Binder.ClassNameMode.SIMPLE_NAME);
         this.onStateChange = onStateChange;
 
@@ -263,6 +280,11 @@ public class VpnClient {
         return state;
     }
 
+    /** True when the device has a usable default network (legacy null supplier → always true). */
+    private boolean isNetworkUp() {
+        return networkAvailable == null || networkAvailable.getAsBoolean();
+    }
+
     private void setState(State newState) {
         synchronized (stateLock) {
             state = newState;
@@ -293,25 +315,33 @@ public class VpnClient {
         }
 
         if (getState() == WAITING) {
-            boolean timeoutReset = false;
-            synchronized (stateLock) {
-                if (timeout++ >= TIMEOUT) {
-                    timeout = 0;
-                    hasError = false;
-                    state = DISCONNECTED;
-                    timeoutReset = true;
+            if (isNetworkUp()) {
+                // Link is up but the server is unreachable (e.g. it blinked) → progressive backoff.
+                int waitSec = backoffSec;
+                DebugLog.log("[" + name + "] reconnect in " + waitSec + "s (server unreachable)");
+                synchronized (this) {
+                    if (getState() == WAITING && !forceReconnectRequested && isNetworkUp()) {
+                        this.wait(waitSec * 1000L);
+                    }
+                }
+                if (!forceReconnectRequested) {
+                    backoffSec = ReconnectBackoff.next(backoffSec, MAX_BACKOFF_SEC);
+                }
+            } else {
+                // No network link at all → park; wake instantly on the next network event (forceReconnect).
+                DebugLog.log("[" + name + "] no network — parking until it returns");
+                synchronized (this) {
+                    if (getState() == WAITING && !forceReconnectRequested && !isNetworkUp()) {
+                        this.wait();
+                    }
                 }
             }
-            if (timeoutReset) {
-                DebugLog.log("Retry timeout reset");
-                onStateChange.accept(DISCONNECTED);
-                return;
-            }
-            synchronized (this) {
-                this.wait(1000);
-            }
-            if (timeout == 1 || timeout % 5 == 0) {
-                DebugLog.log("Reconnect in " + (TIMEOUT - timeout) + "s...");
+            synchronized (stateLock) {
+                if (state == WAITING) {
+                    forceReconnectRequested = false;
+                    hasError = false;
+                    state = DISCONNECTED;   // -> next loop sets CONNECTING and retries
+                }
             }
             return;
         }
@@ -321,18 +351,31 @@ public class VpnClient {
             DataInputStream inStream;
             SSLSocket sslSocket;
 
+            if (!isNetworkUp()) {
+                // No usable network — don't hammer an unreachable default; defer to WAITING (which parks).
+                DebugLog.log("[" + name + "] no network — deferring connect");
+                handleError();
+                return;
+            }
+
             try {
                 SSLSocketFactory factory = sslContext.getSocketFactory();
-                DebugLog.log("Connecting to " + serverAddress + ":" + serverPort);
+                DebugLog.log("[" + name + "] Connecting to " + serverAddress + ":" + serverPort);
 
-                rawSocket = new Socket();
-                socketProtector.accept(rawSocket);
-                rawSocket.setTcpNoDelay(true);
-                rawSocket.setKeepAlive(true);
-                rawSocket.setSoTimeout(SOCKET_READ_TIMEOUT_MS);
-                rawSocket.connect(new InetSocketAddress(serverAddress, serverPort), CONNECT_TIMEOUT_MS);
+                // Connect over the system default network (protected from our own TUN). Multisession =
+                // N such connections; the OS picks the best network (Wi-Fi/cellular) and a network change
+                // triggers an immediate reconnect (see VpnClientWrapper). Use a LOCAL for setup: a
+                // concurrent forceReconnect()/closeConnection() may null the rawSocket field mid-setup —
+                // operating on the local avoids an NPE (a closed socket just throws on connect → retry).
+                Socket rawSock = new Socket();
+                rawSocket = rawSock;
+                socketProtector.accept(rawSock);
+                rawSock.setTcpNoDelay(true);
+                rawSock.setKeepAlive(true);
+                rawSock.setSoTimeout(SOCKET_READ_TIMEOUT_MS);
+                rawSock.connect(new InetSocketAddress(serverAddress, serverPort), CONNECT_TIMEOUT_MS);
 
-                sslSocket = (SSLSocket) factory.createSocket(rawSocket, serverAddress, serverPort, true);
+                sslSocket = (SSLSocket) factory.createSocket(rawSock, serverAddress, serverPort, true);
                 sslSocket.setUseClientMode(true);
                 // Browser-like ClientHello to pass DPI JA3 fingerprinting: let Conscrypt (BoringSSL —
                 // the same engine Chrome-Android uses) offer its default cipher/protocol/GREASE set
@@ -451,6 +494,7 @@ public class VpnClient {
                         DebugLog.log("[AUTH] Virtual IP: " + assignedIp);
 
                         DebugLog.log("[AUTH] Setting state LIVE");
+                        backoffSec = MIN_BACKOFF_SEC;   // connected → reset reconnect backoff
                         setState(LIVE);
 
                         DebugLog.log("[AUTH] Calling onIpAssigned (configureTun + TunHandler.start)...");
@@ -644,6 +688,9 @@ public class VpnClient {
         DebugLog.log("Stopping VPN client");
         keepAliveManager.destroy();
         setState(SHUTDOWN);
+        synchronized (this) {
+            this.notifyAll();   // wake a worker parked in WAITING so it sees SHUTDOWN and exits
+        }
         sendExecutor.shutdownNow();   // interrupt the send writer (it drains+releases on exit)
         closeConnection();
 
@@ -694,6 +741,24 @@ public class VpnClient {
             keepAliveManager.start(serverOutputStream);
             DebugLog.log("KeepAlive resumed after sleep");
         }
+    }
+
+    /**
+     * Reconnect immediately, skipping any backoff/park. Called on a default-network change (the link
+     * just appeared or switched) so recovery is instant instead of waiting for a socket timeout or the
+     * progressive backoff. Resets the backoff, wakes a parked/back-off worker, and drops the current
+     * connection so it re-establishes on the new network.
+     */
+    public void forceReconnect() {
+        if (getState() == SHUTDOWN) {
+            return;
+        }
+        forceReconnectRequested = true;
+        backoffSec = MIN_BACKOFF_SEC;
+        synchronized (this) {
+            this.notifyAll();    // wake a worker sleeping in WAITING (backoff wait or park)
+        }
+        closeConnection();       // if connected, drop it so the worker reconnects on the new network
     }
 
     public void reprotectSocket() {

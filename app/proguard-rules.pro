@@ -1,8 +1,10 @@
 # Add project specific ProGuard rules here.
 
-# JBson — keep all model DTOs (uses @Tag/@Type annotations + reflection)
+# JBson — keep all model DTOs (uses @Tag/@Type annotations + reflection).
+# Signature: preserve generic types so JBson can resolve list element types (e.g. List<Version>) on
+# the bind path. InnerClasses/EnclosingMethod: keep nested DTOs like CapabilityDto.Version intact.
 -keep class su.grinev.model.** { *; }
--keepattributes *Annotation*
+-keepattributes Signature,InnerClasses,EnclosingMethod,*Annotation*
 
 # Lombok — compile-time only, suppress R8 warnings about missing classes
 -dontwarn lombok.**

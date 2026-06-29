@@ -2,9 +2,28 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
-val appVersion = "0.8.0"
+val appVersion = "0.8.0"   // real app version — reported in HELLO; server meters logins by platform+version
 val buildNumberFile = file("build-number.txt")
-val buildNumber = if (buildNumberFile.exists()) buildNumberFile.readText().trim().toInt() else 0
+// Bump the build number at configuration time when an actual build is requested, so the number
+// baked into the APK matches build-number.txt. (The old separate task bumped at EXECUTION time —
+// after the version was already read at configuration — so the APK lagged the file by one.)
+// Plain reads (Android Studio sync, `./gradlew tasks`) don't bump.
+val buildNumber: Int = run {
+    val current = if (buildNumberFile.exists()) buildNumberFile.readText().trim().toInt() else 0
+    val assembling = gradle.startParameter.taskNames.any {
+        it.contains("assemble", ignoreCase = true) ||
+        it.contains("bundle", ignoreCase = true) ||
+        it.contains("install", ignoreCase = true)
+    }
+    if (assembling) {
+        val next = current + 1
+        buildNumberFile.writeText(next.toString())
+        println("Build number -> $next")
+        next
+    } else {
+        current
+    }
+}
 
 android {
     namespace = "su.grinev.myvpn"
@@ -54,20 +73,8 @@ android {
     }
 }
 
-tasks.register("incrementBuildNumber") {
-    doLast {
-        val current = if (buildNumberFile.exists()) buildNumberFile.readText().trim().toInt() else 0
-        buildNumberFile.writeText((current + 1).toString())
-        println("Build number incremented to ${current + 1}")
-    }
-}
-
-tasks.matching { it.name == "assembleDebug" }.configureEach {
-    dependsOn("incrementBuildNumber")
-}
-
 dependencies {
-    implementation("su.grinev:jbson-jdk21:0.8.0.6") // Java 21, no FFM, fresh pool — Android-10-safe (allocateDirect)
+    implementation("su.grinev:jbson-jdk21:0.9.0-24") // Java 21, no FFM, fresh pool — Android-10-safe (allocateDirect); 0.9.0 = record + @Size/@Range/@Pattern validation + enum UNKNOWN-fallback
     compileOnly("org.projectlombok:lombok:1.18.30")
     annotationProcessor("org.projectlombok:lombok:1.18.30")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")

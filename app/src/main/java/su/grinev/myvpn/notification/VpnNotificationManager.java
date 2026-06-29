@@ -92,7 +92,7 @@ public class VpnNotificationManager {
      */
     public int getNotificationTextForState(State state) {
         return switch (state) {
-            case CONNECTING -> R.string.notif_connecting;
+            case CONNECTING, HELLO, AWAITING_HELLO_RESPONSE -> R.string.notif_connecting;
             case CONNECTED, LOGIN, AWAITING_LOGIN_RESPONSE, LIVE -> R.string.notif_connected;
             case WAITING -> R.string.notif_reconnecting;
             case SLEEPING -> R.string.notif_sleeping;

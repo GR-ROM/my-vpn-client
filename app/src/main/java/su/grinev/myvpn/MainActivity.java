@@ -181,7 +181,7 @@ public class MainActivity extends AppCompatActivity {
     private void updateUI(State state) {
         currentState = state;
         switch (state) {
-            case CONNECTED, LOGIN, AWAITING_LOGIN_RESPONSE, LIVE -> binding.connectButton.setText(R.string.btn_disconnect);
+            case CONNECTED, HELLO, AWAITING_HELLO_RESPONSE, LOGIN, AWAITING_LOGIN_RESPONSE, LIVE -> binding.connectButton.setText(R.string.btn_disconnect);
             case CONNECTING, WAITING -> binding.connectButton.setText(R.string.btn_connecting);
             case SLEEPING -> binding.connectButton.setText(R.string.btn_sleeping);
             case DISCONNECTED, ERROR, SHUTDOWN -> binding.connectButton.setText(R.string.btn_connect);
@@ -189,13 +189,14 @@ public class MainActivity extends AppCompatActivity {
 
         int bgResId = switch (state) {
             case CONNECTED, LIVE -> R.drawable.btn_connected;
-            case CONNECTING, WAITING, LOGIN, AWAITING_LOGIN_RESPONSE -> R.drawable.btn_connecting;
+            case CONNECTING, WAITING, HELLO, AWAITING_HELLO_RESPONSE, LOGIN, AWAITING_LOGIN_RESPONSE -> R.drawable.btn_connecting;
             case ERROR -> R.drawable.btn_error;
             case DISCONNECTED, SHUTDOWN, SLEEPING -> R.drawable.btn_disconnected;
         };
         transitionBackground(bgResId);
 
         boolean animating = state == State.CONNECTING || state == State.WAITING
+                || state == State.HELLO || state == State.AWAITING_HELLO_RESPONSE
                 || state == State.LOGIN || state == State.AWAITING_LOGIN_RESPONSE;
         if (animating) {
             startPulse();
@@ -204,7 +205,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         int statusResId = switch (state) {
-            case CONNECTED, LOGIN, AWAITING_LOGIN_RESPONSE, LIVE -> R.string.status_connected;
+            case CONNECTED, HELLO, AWAITING_HELLO_RESPONSE, LOGIN, AWAITING_LOGIN_RESPONSE, LIVE -> R.string.status_connected;
             case CONNECTING -> R.string.status_connecting;
             case DISCONNECTED, SHUTDOWN -> R.string.status_disconnected;
             case ERROR -> R.string.status_error;

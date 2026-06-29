@@ -7,20 +7,16 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 
-import java.util.List;
-
+/**
+ * Body of the {@link Command#FLOW_CONTROL} request (protocol 0.2): pause/resume the downlink via
+ * {@link FlowAction}. Mirrors the server's FlowControlRequestDto on the wire.
+ */
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
 @EqualsAndHashCode(callSuper = false)
-public class VpnLoginRequestDto {
-
+public class FlowControlRequestDto {
     @Tag(0)
-    private String jwt;
-
-    /** Protocol 0.2 capability contract, sent once HELLO is acknowledged (server spec §18). */
-    @Tag(1)
-    private List<CapabilityDto> capabilities;
-
+    private FlowAction action;
 }
