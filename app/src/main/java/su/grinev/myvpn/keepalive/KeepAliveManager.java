@@ -72,8 +72,6 @@ public class KeepAliveManager {
                     CHECK_INTERVAL_MS,
                     TimeUnit.MILLISECONDS
             );
-
-            DebugLog.log("KeepAlive started");
         }
     }
 
@@ -85,7 +83,6 @@ public class KeepAliveManager {
             }
             outputStream = null;
             awaitingPong.set(false);
-            DebugLog.log("KeepAlive stopped");
         }
     }
 
@@ -110,7 +107,7 @@ public class KeepAliveManager {
     public void onPongReceived() {
         if (awaitingPong.compareAndSet(true, false)) {
             long rtt = System.currentTimeMillis() - pingSentTime.get();
-            DebugLog.log("PONG received, RTT: " + rtt + "ms");
+            DebugLog.log("PONG RTT: " + rtt + "ms");
         }
         lastPacketReceivedTime.set(System.currentTimeMillis());
     }
@@ -154,7 +151,6 @@ public class KeepAliveManager {
                 synchronized (lock) {
                     codec.serialize(pingPacketDto, out);
                 }
-                DebugLog.log("PING sent");
             } catch (IOException | RuntimeException e) {
                 DebugLog.log("Failed to send PING: " + e.getMessage());
                 if (isRunning.compareAndSet(true, false)) {

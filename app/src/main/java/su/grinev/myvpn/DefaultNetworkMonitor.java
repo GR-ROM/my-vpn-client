@@ -64,7 +64,6 @@ public class DefaultNetworkMonitor {
             }
         };
         cm.registerNetworkCallback(request, callback);
-        DebugLog.log("DefaultNetworkMonitor started");
     }
 
     public void stop() {
@@ -77,7 +76,6 @@ public class DefaultNetworkMonitor {
             callback = null;
         }
         networks.clear();
-        DebugLog.log("DefaultNetworkMonitor stopped");
     }
 
     /** True while at least one underlying internet network exists. */

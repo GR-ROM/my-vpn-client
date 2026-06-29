@@ -271,7 +271,6 @@ public class VpnClient {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 setState(SHUTDOWN);
-                DebugLog.log("VPN client is shutdown");
             } catch (NoSuchAlgorithmException | KeyManagementException e) {
                 throw new RuntimeException(e);
             }
@@ -402,7 +401,6 @@ public class VpnClient {
 
                 helloAcked = false;
                 setState(HELLO);
-                DebugLog.log("Connected");
                 onStateChange.accept(CONNECTED);
 
                 runProtocolLoop();
@@ -411,18 +409,14 @@ public class VpnClient {
                         + "\n" + android.util.Log.getStackTraceString(e));
                 handleError();
             } finally {
-                DebugLog.log("[FINALLY] entering finally block, state=" + getState());
                 keepAliveManager.stop();
                 closeConnection();
-                DebugLog.log("Connection closed");
             }
         }
     }
 
     private void runProtocolLoop() throws IOException {
-        DebugLog.log("[PROTO] runProtocolLoop entry, state=" + getState());
         if (serverInputStream == null || serverOutputStream == null) {
-            DebugLog.log("[PROTO] streams null on entry, aborting");
             setError(true);
             setState(ERROR);
             return;
@@ -478,42 +472,28 @@ public class VpnClient {
                     setState(AWAITING_LOGIN_RESPONSE);
                 }
                 case AWAITING_LOGIN_RESPONSE -> {
-                    DebugLog.log("[AUTH] Reading login response...");
                     Packet<?> packet = readPacket(Packet.class);
-                    DebugLog.log("[AUTH] Login response received");
                     ResponseDto<VpnIpResponseDto> responseDto = (ResponseDto<VpnIpResponseDto>) packet.getPayload();
 
                     if (responseDto.getStatus() == OK) {
                         DebugLog.log("[AUTH] Authenticated OK");
                         VpnIpResponseDto ipResponse = responseDto.getData();
                         if (ipResponse == null) {
-                            DebugLog.log("[AUTH] No IP data in response");
                             setError(true);
                             setState(DISCONNECTED);
                             break;
                         }
                         assignedIp = intToIpv4(ipResponse.getIpAddress());
                         assignedIpBytes = ipv4ToIntBytes(assignedIp);
-                        DebugLog.log("[AUTH] Virtual IP: " + assignedIp);
 
-                        DebugLog.log("[AUTH] Setting state LIVE");
                         backoffMs = MIN_BACKOFF_MS;   // connected → reset reconnect backoff
                         setState(LIVE);
-
-                        DebugLog.log("[AUTH] Calling onIpAssigned (configureTun + TunHandler.start)...");
                         onIpAssigned.accept(ipResponse);
-                        DebugLog.log("[AUTH] onIpAssigned returned");
 
-                        DebugLog.log("[AUTH] State after onIpAssigned: " + getState());
-                        DebugLog.log("[AUTH] serverOutputStream=" + (serverOutputStream != null ? "OK" : "NULL")
-                                + ", serverInputStream=" + (serverInputStream != null ? "OK" : "NULL")
-                                + ", socket=" + (socket != null ? (socket.isClosed() ? "CLOSED" : "OK") : "NULL"));
                         if (serverOutputStream == null) {
-                            DebugLog.log("[AUTH] serverOutputStream is NULL, cannot start KeepAlive!");
                             break;
                         }
                         keepAliveManager.start(serverOutputStream);
-                        DebugLog.log("[AUTH] KeepAlive started, entering LIVE loop. State=" + getState());
                     } else {
                         DebugLog.log("[AUTH] Auth failed: " + responseDto.getStatus().name());
                         setError(true);
@@ -524,7 +504,6 @@ public class VpnClient {
 
                 case LIVE -> {
                     if (serverInputStream == null) {
-                        DebugLog.log("[LIVE] serverInputStream is NULL, disconnecting");
                         setState(DISCONNECTED);
                         break;
                     }
@@ -583,12 +562,10 @@ public class VpnClient {
                 }
 
                 default -> {
-                    DebugLog.log("[PROTO] Unknown state: " + getState());
                     setState(DISCONNECTED);
                 }
             }
         }
-        DebugLog.log("[PROTO] Loop exited, state=" + getState());
     }
 
     // Read one length-prefixed frame into readBuffer (length header re-written at [0..4)); returns length.
@@ -610,7 +587,6 @@ public class VpnClient {
     }
 
     private void handleError() {
-        DebugLog.log("handleError: " + Thread.currentThread().getName());
         keepAliveManager.stop();
         synchronized (stateLock) {
             if (state == SHUTDOWN) return;
@@ -621,7 +597,6 @@ public class VpnClient {
     }
 
     private void onKeepAliveFailed() {
-        DebugLog.log("KeepAlive failed, triggering reconnection");
         synchronized (stateLock) {
             if (state == SHUTDOWN) return;
             hasError = true;
@@ -688,7 +663,6 @@ public class VpnClient {
     }
 
     public void stop() {
-        DebugLog.log("Stopping VPN client");
         keepAliveManager.destroy();
         setState(SHUTDOWN);
         synchronized (this) {
@@ -727,7 +701,6 @@ public class VpnClient {
                 codec.serialize(flowControlPacketDto, out);
                 out.flush();
             }
-            DebugLog.log("FLOW_CONTROL " + action + " sent");
         } catch (Throwable e) {
             // Never let a control-message hiccup propagate (it must not crash a lifecycle callback).
             DebugLog.log("FLOW_CONTROL send failed: " + e.getClass().getSimpleName() + ": " + e.getMessage());
@@ -736,13 +709,11 @@ public class VpnClient {
 
     public void pauseKeepAlive() {
         keepAliveManager.stop();
-        DebugLog.log("KeepAlive paused for sleep");
     }
 
     public void resumeKeepAlive() {
         if (serverOutputStream != null && getState() == LIVE) {
             keepAliveManager.start(serverOutputStream);
-            DebugLog.log("KeepAlive resumed after sleep");
         }
     }
 
@@ -767,7 +738,6 @@ public class VpnClient {
     public void reprotectSocket() {
         if (rawSocket != null && !rawSocket.isClosed()) {
             socketProtector.accept(rawSocket);
-            DebugLog.log("Raw socket re-protected (post-tunnel)");
         }
     }
 
@@ -776,8 +746,6 @@ public class VpnClient {
     }
 
     private void closeConnection() {
-        DebugLog.log("[CLOSE] closeConnection called from " + Thread.currentThread().getName());
-
         // Close the socket FIRST, outside of outputLock. Socket.close() is thread-safe and
         // is the only way to unblock a writer thread stuck in codec.serialize(...) while
         // holding outputLock — if we waited for the lock here we'd deadlock against it.

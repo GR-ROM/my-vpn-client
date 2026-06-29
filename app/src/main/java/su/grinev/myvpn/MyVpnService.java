@@ -43,14 +43,12 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
         if (poolFactory == null) {
             synchronized (MyVpnService.class) {
                 if (poolFactory == null) {
-                    DebugLog.log("getPoolFactory: creating PoolFactory");
                     poolFactory = PoolFactory.Builder.builder()
                             .setMinPoolSize(100)
                             .setMaxPoolSize(1000)
                             .setBlocking(true)
                             .setOutOfPoolTimeout(100)
                             .build();
-                    DebugLog.log("getPoolFactory: OK");
                 }
             }
         }
@@ -87,13 +85,8 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        DebugLog.log("onStartCommand: entry, SDK=" + Build.VERSION.SDK_INT + " (" + Build.VERSION.RELEASE + "), device=" + Build.MANUFACTURER + " " + Build.MODEL);
-        DebugLog.log("onStartCommand: intent=" + intent + ", action=" + (intent != null ? intent.getAction() : "null") + ", flags=" + flags + ", startId=" + startId);
-
         try {
-            DebugLog.log("onStartCommand: initializing dependencies");
             initializeDependencies();
-            DebugLog.log("onStartCommand: dependencies initialized OK");
         } catch (Exception e) {
             DebugLog.log("onStartCommand: initializeDependencies FAILED: " + Log.getStackTraceString(e));
             stopSelf();
@@ -114,15 +107,10 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
         }
 
         try {
-            DebugLog.log("onStartCommand: registering screen state handler");
             screenStateHandler.register();
-            DebugLog.log("onStartCommand: screen state handler registered OK");
         } catch (Exception e) {
             DebugLog.log("onStartCommand: screenStateHandler.register FAILED: " + Log.getStackTraceString(e));
         }
-
-        DebugLog.log("VPN service started");
-        DebugLog.log("Server: " + settingsProvider.getServerIp() + ":" + settingsProvider.getServerPort());
 
         startVpnConnection();
         return START_STICKY;
@@ -130,42 +118,27 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
 
     private void initializeDependencies() {
         if (settingsProvider == null) {
-            DebugLog.log("initDeps: creating SharedPreferencesSettingsProvider");
             settingsProvider = new SharedPreferencesSettingsProvider(this);
-            DebugLog.log("initDeps: settingsProvider OK");
         }
         if (notificationManager == null) {
-            DebugLog.log("initDeps: creating VpnNotificationManager");
             notificationManager = new VpnNotificationManager(this, ACTION_DISCONNECT, MyVpnService.class);
-            DebugLog.log("initDeps: notificationManager OK");
         }
         if (screenStateHandler == null) {
-            DebugLog.log("initDeps: creating ScreenStateHandler");
             screenStateHandler = new ScreenStateHandler(this, this);
-            DebugLog.log("initDeps: screenStateHandler OK");
         }
     }
 
     private void startVpnConnection() {
-        DebugLog.log("startVpnConnection: entry");
         synchronized (vpnLock) {
             if (isConnecting) {
-                DebugLog.log("startVpnConnection: already in progress, ignoring");
                 return;
             }
             isConnecting = true;
         }
 
         try {
-            DebugLog.log("startVpnConnection: setting state CONNECTING");
             updateState(State.CONNECTING);
-
-            DebugLog.log("startVpnConnection: creating TunAndroid");
             TunAndroid tunAndroid = new TunAndroid(this);
-            DebugLog.log("startVpnConnection: TunAndroid created OK");
-
-            DebugLog.log("startVpnConnection: creating VpnClientWrapper, server="
-                    + settingsProvider.getServerIp() + ":" + settingsProvider.getServerPort());
             VpnClientWrapper newWrapper = new VpnClientWrapper(
                     tunAndroid,
                     settingsProvider.getServerIp(),
@@ -176,7 +149,6 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
                     getPoolFactory(),
                     this::onVpnStateChanged
             );
-            DebugLog.log("startVpnConnection: VpnClientWrapper created OK");
 
             synchronized (vpnLock) {
                 vpnClientWrapper = newWrapper;
@@ -287,7 +259,6 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
             }
 
             if (connectionAlive) {
-                DebugLog.log("Connection still alive after wake");
                 if (trafficStats != null) {
                     trafficStats.start();
                 }
@@ -341,8 +312,6 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
 
     @Override
     public void onDestroy() {
-        DebugLog.log("VPN service destroyed");
-
         if (trafficStats != null) {
             trafficStats.stop();
             trafficStats.reset();

@@ -44,12 +44,10 @@ public class TunAndroid implements Tun {
         for (String pkg : excludedApps) {
             try {
                 builder.addDisallowedApplication(pkg);
-                DebugLog.log("Excluded from VPN: " + pkg);
             } catch (PackageManager.NameNotFoundException e) {
-                DebugLog.log("Excluded app not found, skipping: " + pkg);
+                // excluded app not installed — skip
             }
         }
-        DebugLog.log("Set tun IP: " + ip);
         if (defaultRouteViaVpn) {
             builder.addRoute("0.0.0.0", 0);
         }
@@ -88,8 +86,6 @@ public class TunAndroid implements Tun {
         writeChannel = null;
         tunFd = null;
         deviceName = null;
-
-        DebugLog.log("TUN closed");
     }
 
     @Override
@@ -112,7 +108,6 @@ public class TunAndroid implements Tun {
         } else {
             try {
                 Thread.sleep(1000);
-                DebugLog.log("tun is not ready, waiting...");
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new IOException("Thread interrupted while waiting for TUN");

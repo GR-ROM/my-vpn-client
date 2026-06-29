@@ -51,7 +51,7 @@ public class VpnStateManager {
         }
 
         if (oldState != state) {
-            DebugLog.log("State: " + oldState + " -> " + state);
+            DebugLog.log("[STATE] " + oldState + " -> " + state);
             notifyListeners(state);
         }
     }
