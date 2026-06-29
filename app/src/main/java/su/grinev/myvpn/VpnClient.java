@@ -73,11 +73,13 @@ import su.grinev.pool.PoolFactory;
 public class VpnClient {
     public static final int BUFFER_SIZE = 2048;
     private static final int MAX_PACKET_SIZE = 65536;
-    // Progressive reconnect backoff (server-unreachable case): 1s, doubling up to 60s. Reset to 1 on a
-    // successful connect or a network-change event (forceReconnect). When there is no network link at
-    // all we don't back off — we park and wake instantly on the next network event.
-    private static final int MIN_BACKOFF_SEC = 1;
-    private static final int MAX_BACKOFF_SEC = 60;
+    // Progressive reconnect backoff (server-unreachable case): start short — 200ms — so the first retry
+    // right after a network-available event (the route may not be fully up yet → a transient
+    // ENETUNREACH) recovers near-instantly; double up to a 60s cap. Reset on a successful connect or a
+    // network-change event (forceReconnect). When there is no network link at all we don't back off —
+    // we park and wake instantly on the next network event.
+    private static final int MIN_BACKOFF_MS = 200;
+    private static final int MAX_BACKOFF_MS = 60_000;
     private static final int CONNECT_TIMEOUT_MS = 10_000;
     /** Cover SNI sent in the ClientHello so it looks like a browser visiting a popular,
      *  rarely-blocked site (defeats passive SNI filtering + adds the SNI extension to JA3).
@@ -105,7 +107,7 @@ public class VpnClient {
     private final Object outputLock = new Object();
     private volatile State state;
     private volatile boolean hasError = false;
-    private volatile int backoffSec = MIN_BACKOFF_SEC;
+    private volatile int backoffMs = MIN_BACKOFF_MS;
     // Set by forceReconnect() (network-change event) to short-circuit the backoff/park: the next
     // WAITING tick reconnects immediately and resets the backoff. Cleared once consumed.
     private volatile boolean forceReconnectRequested = false;
@@ -316,16 +318,17 @@ public class VpnClient {
 
         if (getState() == WAITING) {
             if (isNetworkUp()) {
-                // Link is up but the server is unreachable (e.g. it blinked) → progressive backoff.
-                int waitSec = backoffSec;
-                DebugLog.log("[" + name + "] reconnect in " + waitSec + "s (server unreachable)");
+                // Link is up but the server is unreachable (it blinked, or the route isn't fully up yet
+                // right after a network event) → progressive backoff starting at 200ms.
+                int waitMs = backoffMs;
+                DebugLog.log("[" + name + "] reconnect in " + waitMs + "ms (server unreachable)");
                 synchronized (this) {
                     if (getState() == WAITING && !forceReconnectRequested && isNetworkUp()) {
-                        this.wait(waitSec * 1000L);
+                        this.wait(waitMs);
                     }
                 }
                 if (!forceReconnectRequested) {
-                    backoffSec = ReconnectBackoff.next(backoffSec, MAX_BACKOFF_SEC);
+                    backoffMs = ReconnectBackoff.next(backoffMs, MAX_BACKOFF_MS);
                 }
             } else {
                 // No network link at all → park; wake instantly on the next network event (forceReconnect).
@@ -494,7 +497,7 @@ public class VpnClient {
                         DebugLog.log("[AUTH] Virtual IP: " + assignedIp);
 
                         DebugLog.log("[AUTH] Setting state LIVE");
-                        backoffSec = MIN_BACKOFF_SEC;   // connected → reset reconnect backoff
+                        backoffMs = MIN_BACKOFF_MS;   // connected → reset reconnect backoff
                         setState(LIVE);
 
                         DebugLog.log("[AUTH] Calling onIpAssigned (configureTun + TunHandler.start)...");
@@ -754,7 +757,7 @@ public class VpnClient {
             return;
         }
         forceReconnectRequested = true;
-        backoffSec = MIN_BACKOFF_SEC;
+        backoffMs = MIN_BACKOFF_MS;
         synchronized (this) {
             this.notifyAll();    // wake a worker sleeping in WAITING (backoff wait or park)
         }
