@@ -6,9 +6,11 @@ import static su.grinev.model.Command.PING;
 import static su.grinev.model.Status.OK;
 import static su.grinev.myvpn.NetUtils.intToIpv4;
 import static su.grinev.myvpn.NetUtils.ipv4ToIntBytes;
+import static su.grinev.myvpn.State.AWAITING_HELLO_RESPONSE;
 import static su.grinev.myvpn.State.AWAITING_LOGIN_RESPONSE;
 import static su.grinev.myvpn.State.CONNECTED;
 import static su.grinev.myvpn.State.CONNECTING;
+import static su.grinev.myvpn.State.HELLO;
 import static su.grinev.myvpn.State.DISCONNECTED;
 import static su.grinev.myvpn.State.ERROR;
 import static su.grinev.myvpn.State.LIVE;
@@ -43,6 +45,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManager;
@@ -51,9 +54,14 @@ import javax.net.ssl.X509TrustManager;
 import su.grinev.Binder;
 import su.grinev.Codec;
 import su.grinev.model.Command;
+import su.grinev.model.FlowAction;
+import su.grinev.model.FlowControlRequestDto;
+import su.grinev.model.HelloDto;
 import su.grinev.model.Packet;
+import su.grinev.model.PlatformType;
 import su.grinev.model.RequestDto;
 import su.grinev.model.ResponseDto;
+import su.grinev.model.Status;
 import su.grinev.model.VpnForwardPacketRequestDto;
 import su.grinev.model.VpnIpResponseDto;
 import su.grinev.model.VpnLoginRequestDto;
@@ -103,6 +111,22 @@ public class VpnClient {
     private final VpnLoginRequestDto loginDto = new VpnLoginRequestDto();
     private final RequestDto<VpnLoginRequestDto> loginRequestDto = new RequestDto<>();
     private final Packet<RequestDto<?>> loginPacketDto = new Packet<>();
+
+    // Client app version reported in the pre-auth HELLO (server spec §18). MUST be >= the server's
+    // MIN_CLIENT_VERSION (currently 1.0.4) or the server rejects the HELLO with OUTDATED.
+    private static final String CLIENT_VERSION = BuildConfig.VERSION_NAME;
+
+    // Pre-allocated for the pre-auth HELLO (single-threaded: VpnClientWorker thread only)
+    private final HelloDto helloDto = new HelloDto();
+    private final RequestDto<HelloDto> helloRequestDto = new RequestDto<>();
+    private final Packet<RequestDto<?>> helloPacketDto = new Packet<>();
+    // Set once the server acknowledges HELLO; gates sending the full capability contract at LOGIN.
+    private volatile boolean helloAcked = false;
+
+    // Pre-allocated for FLOW_CONTROL (sent from lifecycle callbacks; serialized under outputLock)
+    private final FlowControlRequestDto flowControlDto = new FlowControlRequestDto();
+    private final RequestDto<FlowControlRequestDto> flowControlRequestDto = new RequestDto<>();
+    private final Packet<RequestDto<?>> flowControlPacketDto = new Packet<>();
 
     // Pre-allocated read buffer and ByteBuffer view (single-threaded: VpnClientWorker thread only)
     private final byte[] readBuffer = new byte[MAX_PACKET_SIZE];
@@ -158,6 +182,22 @@ public class VpnClient {
         loginRequestDto.setData(loginDto);
         loginPacketDto.setVer("0.2");   // negotiate protocol v0.2 with the server at login
         loginPacketDto.setPayload(loginRequestDto);
+
+        // Pre-auth HELLO: report app version + platform + supported LOGIN versions (server spec §18).
+        helloDto.setVersion(CLIENT_VERSION);
+        helloDto.setPlatformType(PlatformType.ANDROID);
+        helloDto.setCapabilities(ClientCapabilities.helloPreAuth());
+        helloRequestDto.setCommand(Command.HELLO);
+        helloRequestDto.setResponseRequired(true);
+        helloRequestDto.setData(helloDto);
+        helloPacketDto.setVer("0.2");
+        helloPacketDto.setPayload(helloRequestDto);
+
+        // FLOW_CONTROL: pause/resume the downlink without re-login (fire-and-forget).
+        flowControlRequestDto.setCommand(Command.FLOW_CONTROL);
+        flowControlRequestDto.setData(flowControlDto);
+        flowControlPacketDto.setVer("0.2");
+        flowControlPacketDto.setPayload(flowControlRequestDto);
 
         try {
             sslContext = SSLContext.getInstance("TLS");
@@ -288,9 +328,15 @@ public class VpnClient {
                 rawSocket.connect(new InetSocketAddress(serverAddress, serverPort), CONNECT_TIMEOUT_MS);
 
                 sslSocket = (SSLSocket) factory.createSocket(rawSocket, serverAddress, serverPort, true);
-                sslSocket.setEnabledProtocols(new String[]{"TLSv1.3"});
-                sslSocket.setEnabledCipherSuites(new String[]{ "TLS_AES_128_GCM_SHA256", "TLS_AES_256_GCM_SHA384"});
                 sslSocket.setUseClientMode(true);
+                // Browser-like ClientHello to pass DPI JA3 fingerprinting: let Conscrypt (BoringSSL —
+                // the same engine Chrome-Android uses) offer its default cipher/protocol/GREASE set
+                // instead of a tell-tale TLS1.3-only, 2-cipher list, and advertise ALPN h2/http1.1 like
+                // a browser. The server selects http/1.1; the VPN protocol rides inside TLS regardless
+                // of the negotiated ALPN value.
+                SSLParameters sslParams = sslSocket.getSSLParameters();
+                sslParams.setApplicationProtocols(new String[]{"h2", "http/1.1"});
+                sslSocket.setSSLParameters(sslParams);
                 sslSocket.setSoTimeout(SOCKET_READ_TIMEOUT_MS);
                 sslSocket.startHandshake();
                 DebugLog.log("TLS handshake complete");
@@ -302,7 +348,8 @@ public class VpnClient {
                 serverOutputStream = outStream;
                 serverInputStream = inStream;
 
-                setState(LOGIN);
+                helloAcked = false;
+                setState(HELLO);
                 DebugLog.log("Connected");
                 onStateChange.accept(CONNECTED);
 
@@ -331,13 +378,51 @@ public class VpnClient {
 
         while (getState() != DISCONNECTED && getState() != SHUTDOWN) {
             switch (getState()) {
+                case HELLO -> {
+                    helloPacketDto.setTimestamp(FIXED_TIMESTAMP);
+                    synchronized (outputLock) {
+                        codec.serialize(helloPacketDto, serverOutputStream);
+                    }
+                    DebugLog.log("HELLO sent (version=" + CLIENT_VERSION + ", platform=ANDROID)");
+                    setState(AWAITING_HELLO_RESPONSE);
+                }
+                case AWAITING_HELLO_RESPONSE -> {
+                    try {
+                        Packet<?> packet = readPacket(Packet.class);
+                        ResponseDto<?> responseDto = (ResponseDto<?>) packet.getPayload();
+                        if (responseDto.getStatus() == OK) {
+                            helloAcked = true;
+                            DebugLog.log("[HELLO] Acknowledged — proceeding to LOGIN with capabilities");
+                            setState(LOGIN);
+                        } else if (responseDto.getStatus() == Status.OUTDATED) {
+                            DebugLog.log("[HELLO] Client OUTDATED (version " + CLIENT_VERSION
+                                    + " below server minimum) — update required, not reconnecting");
+                            setError(true);
+                            setState(SHUTDOWN);
+                            return;
+                        } else {
+                            DebugLog.log("[HELLO] Unexpected status " + responseDto.getStatus()
+                                    + " — falling back to legacy LOGIN");
+                            helloAcked = false;
+                            setState(LOGIN);
+                        }
+                    } catch (SocketTimeoutException e) {
+                        // Server didn't answer HELLO (e.g. an older node) — proceed with a legacy LOGIN.
+                        DebugLog.log("[HELLO] No response (timeout) — falling back to legacy LOGIN");
+                        helloAcked = false;
+                        setState(LOGIN);
+                    }
+                }
                 case LOGIN -> {
                     loginDto.setJwt(jwt);
+                    // Send the full capability contract only once HELLO was acknowledged (server spec §18);
+                    // a legacy/no-HELLO login sends no capabilities and the server treats it accordingly.
+                    loginDto.setCapabilities(helloAcked ? ClientCapabilities.full() : null);
                     loginPacketDto.setTimestamp(FIXED_TIMESTAMP);
                     synchronized (outputLock) {
                         codec.serialize(loginPacketDto, serverOutputStream);
                     }
-                    DebugLog.log("Login request sent");
+                    DebugLog.log("Login request sent" + (helloAcked ? " (with capabilities)" : " (legacy)"));
                     setState(AWAITING_LOGIN_RESPONSE);
                 }
                 case AWAITING_LOGIN_RESPONSE -> {
@@ -564,6 +649,32 @@ public class VpnClient {
         } catch (InterruptedException e) {
             executor.shutdownNow();
             Thread.currentThread().interrupt();
+        }
+    }
+
+    // Send a FLOW_CONTROL request (protocol 0.2): pause (STOP) / resume (START) the server→client
+    // downlink without re-login. Fire-and-forget; only valid while LIVE. Serialized under outputLock,
+    // so it is safe to call from a lifecycle thread alongside the keepalive/worker writers.
+    public void sendFlowControl(FlowAction action) {
+        if (getState() != LIVE) {
+            return;
+        }
+        DataOutputStream out = serverOutputStream;
+        if (out == null) {
+            return;
+        }
+        try {
+            synchronized (outputLock) {
+                flowControlDto.setAction(action);
+                flowControlRequestDto.setResponseRequired(false);
+                flowControlPacketDto.setTimestamp(FIXED_TIMESTAMP);
+                codec.serialize(flowControlPacketDto, out);
+                out.flush();
+            }
+            DebugLog.log("FLOW_CONTROL " + action + " sent");
+        } catch (Throwable e) {
+            // Never let a control-message hiccup propagate (it must not crash a lifecycle callback).
+            DebugLog.log("FLOW_CONTROL send failed: " + e.getClass().getSimpleName() + ": " + e.getMessage());
         }
     }
 
