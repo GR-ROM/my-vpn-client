@@ -74,6 +74,7 @@ public final class DebugLog {
         Log.d("MyVPN", msg);
 
         String snapshot;
+        String fileLine;
         synchronized (buffer) {
             reusableDate.setTime(System.currentTimeMillis());
             lineBuilder.setLength(0);
@@ -87,7 +88,10 @@ public final class DebugLog {
                 buffer.delete(0, buffer.length() - 32_000);
             }
             snapshot = buffer.toString();
+            fileLine = lineBuilder.toString();
         }
+
+        FileLogger.append(fileLine);
 
         for (Listener l : listeners) {
             l.onLog(snapshot);

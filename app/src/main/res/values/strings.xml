@@ -2,6 +2,15 @@
     <string name="app_name">MyVPN</string>
     <string name="action_settings">Settings</string>
 
+    <!-- Log upload -->
+    <string name="upload_logs">Upload logs</string>
+    <string name="upload_pick_date">Select log date</string>
+    <string name="upload_no_logs">No logs to upload</string>
+    <string name="upload_not_configured">Set the server and token in Settings first</string>
+    <string name="upload_in_progress">Uploading… %1$d%%</string>
+    <string name="upload_success">Logs uploaded</string>
+    <string name="upload_failed">Upload failed: %1$s</string>
+
     <!-- Button labels -->
     <string name="btn_connect">Connect</string>
     <string name="btn_disconnect">Disconnect</string>

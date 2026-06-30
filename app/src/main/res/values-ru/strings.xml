@@ -3,6 +3,15 @@
     <string name="app_name">MyVPN</string>
     <string name="action_settings">Настройки</string>
 
+    <!-- Log upload -->
+    <string name="upload_logs">Отправить логи</string>
+    <string name="upload_pick_date">Выберите дату логов</string>
+    <string name="upload_no_logs">Нет логов для отправки</string>
+    <string name="upload_not_configured">Сначала укажите сервер и токен в настройках</string>
+    <string name="upload_in_progress">Отправка… %1$d%%</string>
+    <string name="upload_success">Логи отправлены</string>
+    <string name="upload_failed">Ошибка отправки: %1$s</string>
+
     <!-- Button labels -->
     <string name="btn_connect">Подключить</string>
     <string name="btn_disconnect">Отключить</string>

@@ -7,6 +7,8 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 
+import java.util.List;
+
 @Data
 @Builder
 @NoArgsConstructor
@@ -19,4 +21,8 @@ public class VpnIpResponseDto {
     private int gatewayIpAddress;
     @Tag(2)
     private int dnsServer;
+
+    /** Server's post-auth capability contract (server @Tag(3)); read for negotiation/diagnostics. */
+    @Tag(3)
+    private List<CapabilityDto> capabilities;
 }

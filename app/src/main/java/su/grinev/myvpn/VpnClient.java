@@ -3,6 +3,7 @@ package su.grinev.myvpn;
 import static su.grinev.model.Command.DISCONNECT;
 import static su.grinev.model.Command.FORWARD_PACKET;
 import static su.grinev.model.Command.PING;
+import static su.grinev.model.Command.REQUEST_LOGS;
 import static su.grinev.model.Status.OK;
 import static su.grinev.myvpn.NetUtils.intToIpv4;
 import static su.grinev.myvpn.NetUtils.ipv4ToIntBytes;
@@ -23,7 +24,10 @@ import android.annotation.SuppressLint;
 
 import java.io.DataInputStream;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.io.DataOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
@@ -42,6 +46,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
@@ -64,9 +69,16 @@ import su.grinev.model.PlatformType;
 import su.grinev.model.RequestDto;
 import su.grinev.model.ResponseDto;
 import su.grinev.model.Status;
+import su.grinev.model.CapabilityDto;
 import su.grinev.model.VpnForwardPacketRequestDto;
 import su.grinev.model.VpnIpResponseDto;
 import su.grinev.model.VpnLoginRequestDto;
+import su.grinev.model.FileType;
+import su.grinev.model.FinalizeFileUploadDto;
+import su.grinev.model.InitFileUploadDto;
+import su.grinev.model.InitFileUploadResponseDto;
+import su.grinev.model.RequestLogsDto;
+import su.grinev.model.UploadFileChunkDto;
 import su.grinev.myvpn.keepalive.KeepAliveManager;
 import su.grinev.pool.PoolFactory;
 
@@ -152,6 +164,19 @@ public class VpnClient {
     private final byte[] readBuffer = new byte[MAX_PACKET_SIZE];
     private final ByteBuffer readByteBuffer = ByteBuffer.wrap(readBuffer);
 
+    // --- Server-initiated log upload (REQUEST_LOGS) ---
+    private static final int UPLOAD_CHUNK_SIZE = 12 * 1024;            // frame stays under the 16 KiB wire limit
+    private static final int UPLOAD_CODEC_BUFFER_SIZE = 32 * 1024;     // own codec: the shared one is sized for tiny control msgs
+    private static final int UPLOAD_RESPONSE_TIMEOUT_MS = 30_000;
+    private final Codec uploadCodec;
+    // The read loop routes a ResponseDto whose requestId == pendingUploadSeq into uploadResponses; the
+    // worker thread drains them. uploadSeq stays >= 1 so it never collides with the keepalive PONG
+    // (PING seq = 0). Only one upload runs at a time (uploading guard).
+    private final BlockingQueue<ResponseDto<?>> uploadResponses = new ArrayBlockingQueue<>(4);
+    private final AtomicInteger uploadSeq = new AtomicInteger(0);
+    private volatile int pendingUploadSeq = -1;
+    private volatile boolean uploading = false;
+
     // Upload batching (mirrors the server/desktop pattern): the TUN reader hands pooled buffers
     // off here (ownership transfer); a dedicated writer thread drains a batch, packs all frames
     // into one buffer, does a single write + flush, then releases every buffer back to the pool
@@ -189,6 +214,7 @@ public class VpnClient {
         this.networkAvailable = networkAvailable;
         this.name = name;
         this.codec = Codec.messagePack(poolFactory, BUFFER_SIZE, Binder.ClassNameMode.SIMPLE_NAME);
+        this.uploadCodec = Codec.messagePack(poolFactory, UPLOAD_CODEC_BUFFER_SIZE, Binder.ClassNameMode.SIMPLE_NAME);
         this.onStateChange = onStateChange;
 
         this.keepAliveManager = new KeepAliveManager(outputLock, codec, this::onKeepAliveFailed);
@@ -210,7 +236,10 @@ public class VpnClient {
         // Pre-auth HELLO: report app version + platform + supported LOGIN versions (server spec §18).
         helloDto.setVersion(CLIENT_VERSION);
         helloDto.setPlatformType(PlatformType.ANDROID);
-        helloDto.setCapabilities(ClientCapabilities.helloPreAuth());
+        // Send the FULL capability contract in HELLO — the server reads HELLO caps to build the
+        // session contract (and replies with only LOGIN versions for anti-fingerprint). LOGIN itself
+        // carries no caps.
+        helloDto.setCapabilities(ClientCapabilities.full());
         helloRequestDto.setCommand(Command.HELLO);
         helloRequestDto.setResponseRequired(true);
         helloRequestDto.setData(helloDto);
@@ -461,9 +490,7 @@ public class VpnClient {
                 }
                 case LOGIN -> {
                     loginDto.setJwt(jwt);
-                    // Send the full capability contract only once HELLO was acknowledged (server spec §18);
-                    // a legacy/no-HELLO login sends no capabilities and the server treats it accordingly.
-                    loginDto.setCapabilities(helloAcked ? ClientCapabilities.full() : null);
+                    // Capabilities travel in HELLO, not here — VpnLoginRequestDto carries only the JWT.
                     loginPacketDto.setTimestamp(FIXED_TIMESTAMP);
                     synchronized (outputLock) {
                         codec.serialize(loginPacketDto, serverOutputStream);
@@ -483,6 +510,7 @@ public class VpnClient {
                             setState(DISCONNECTED);
                             break;
                         }
+                        DebugLog.log("[CAPS] server caps: " + describeCaps(ipResponse.getCapabilities()));
                         assignedIp = intToIpv4(ipResponse.getIpAddress());
                         assignedIpBytes = ipv4ToIntBytes(assignedIp);
 
@@ -533,12 +561,19 @@ public class VpnClient {
 
                     readByteBuffer.position(0).limit(len);
                     Packet<?> packet = codec.deserialize(readByteBuffer, Packet.class);
-                    if (packet.getPayload() instanceof ResponseDto<?>) {
-                        keepAliveManager.onPongReceived();
+
+                    if (packet.getPayload() instanceof ResponseDto<?> responseDto) {
+                        // A ResponseDto is either our keepalive PONG or a reply to an in-flight log-upload
+                        // request — route by requestId so the upload worker gets exactly its responses.
+                        if (pendingUploadSeq != -1 && responseDto.getRequestId() == pendingUploadSeq) {
+                            uploadResponses.offer(responseDto);
+                        } else {
+                            keepAliveManager.onPongReceived();
+                        }
                         continue;
                     }
 
-                    RequestDto<VpnForwardPacketRequestDto> requestDto = (RequestDto<VpnForwardPacketRequestDto>) packet.getPayload();
+                    RequestDto<?> requestDto = (RequestDto<?>) packet.getPayload();
 
                     if (requestDto.getCommand() == PING) {
                         pongResponseDto.setRequestId(requestDto.getSeq());
@@ -546,6 +581,12 @@ public class VpnClient {
                         synchronized (outputLock) {
                             codec.serialize(pongPacketDto, serverOutputStream);
                         }
+                        continue;
+                    }
+
+                    if (requestDto.getCommand() == REQUEST_LOGS) {
+                        String date = requestDto.getData() instanceof RequestLogsDto r ? r.getDate() : null;
+                        startLogUpload(date);
                         continue;
                     }
 
@@ -584,6 +625,136 @@ public class VpnClient {
         int packetSize = readFrame();
         readByteBuffer.position(0).limit(packetSize);
         return codec.deserialize(readByteBuffer, tClass);
+    }
+
+    // ===================== Server-initiated log upload (REQUEST_LOGS) =====================
+
+    private void startLogUpload(String date) {
+        if (uploading) {
+            DebugLog.log("[LOGS] upload already in progress — ignoring REQUEST_LOGS");
+            return;
+        }
+        uploading = true;
+        Thread t = new Thread(() -> {
+            try {
+                uploadLogFile(date);
+            } finally {
+                uploading = false;
+            }
+        }, "LogUpload");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private void uploadLogFile(String date) {
+        File file;
+        String displayName;
+        try {
+            LocalDate day = (date == null || date.isEmpty()) ? LocalDate.now() : LocalDate.parse(date);
+            file = FileLogger.fileFor(day);
+            displayName = "myvpn-" + day + ".log";
+        } catch (Exception e) {
+            DebugLog.log("[LOGS] bad date '" + date + "': " + e.getMessage());
+            return;
+        }
+        if (!file.isFile() || file.length() == 0) {
+            DebugLog.log("[LOGS] no log file for " + (date == null || date.isEmpty() ? "today" : date));
+            return;
+        }
+        long size = file.length();
+        DebugLog.log("[LOGS] REQUEST_LOGS → uploading " + displayName + " (" + size + " bytes)");
+        try (FileInputStream fis = new FileInputStream(file)) {
+            ResponseDto<?> init = uploadRequest(Command.INIT_FILE_UPLOAD,
+                    InitFileUploadDto.builder().size(size).name(displayName).type(FileType.LOG).build());
+            if (init == null || init.getStatus() != Status.OK || !(init.getData() instanceof InitFileUploadResponseDto idr)) {
+                DebugLog.log("[LOGS] init rejected: " + (init == null ? "timeout" : init.getStatus()));
+                return;
+            }
+            long uploadId = idr.getUploadId();
+            byte[] buf = new byte[UPLOAD_CHUNK_SIZE];
+            long offset = 0;
+            long remaining = size;
+            int n;
+            // Read EXACTLY the size declared at INIT. The live daily log file keeps growing while we
+            // upload (FileLogger appends, including these [LOGS] lines), so reading past `size` would
+            // exceed the declared length and the server rejects the chunk with IO_ERROR.
+            while (remaining > 0 && (n = fis.read(buf, 0, (int) Math.min(buf.length, remaining))) > 0) {
+                ResponseDto<?> chunk = uploadRequest(Command.UPLOAD_FILE_CHUNK, UploadFileChunkDto.builder()
+                        .uploadId(uploadId).offset(offset).chunkData(ByteBuffer.wrap(buf, 0, n)).build());
+                if (chunk == null || chunk.getStatus() != Status.OK) {
+                    DebugLog.log("[LOGS] chunk failed at " + offset + ": " + (chunk == null ? "timeout" : chunk.getStatus()));
+                    return;
+                }
+                offset += n;
+                remaining -= n;
+            }
+            ResponseDto<?> fin = uploadRequest(Command.FINALIZE_FILE_UPLOAD,
+                    FinalizeFileUploadDto.builder().uploadId(uploadId).build());
+            if (fin == null || fin.getStatus() != Status.OK) {
+                DebugLog.log("[LOGS] finalize failed: " + (fin == null ? "timeout" : fin.getStatus()));
+                return;
+            }
+            DebugLog.log("[LOGS] upload complete: " + displayName + " (" + offset + " bytes)");
+        } catch (Exception e) {
+            DebugLog.log("[LOGS] upload error: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+        }
+    }
+
+    /** Send one upload request over the live connection and wait (seq-correlated) for its ResponseDto. */
+    private ResponseDto<?> uploadRequest(Command command, Object data) throws InterruptedException {
+        DataOutputStream out = serverOutputStream;
+        if (out == null || getState() != LIVE) {
+            return null;
+        }
+        int seq = uploadSeq.incrementAndGet();
+        uploadResponses.clear();
+        pendingUploadSeq = seq;
+
+        RequestDto<Object> request = new RequestDto<>();
+        request.setSeq(seq);
+        request.setCommand(command);
+        request.setResponseRequired(true);
+        request.setData(data);
+        Packet<Object> envelope = new Packet<>();
+        envelope.setVer("0.2");
+        envelope.setTimestamp(FIXED_TIMESTAMP);
+        envelope.setPayload(request);
+
+        try {
+            synchronized (outputLock) {
+                uploadCodec.serialize(envelope, out);
+            }
+        } catch (Exception e) {
+            DebugLog.log("[LOGS] send error: " + e.getMessage());
+            pendingUploadSeq = -1;
+            return null;
+        }
+        ResponseDto<?> resp = uploadResponses.poll(UPLOAD_RESPONSE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        pendingUploadSeq = -1;
+        return resp;
+    }
+
+    /** Compact one-line render of a capability contract, e.g. "LOGIN[0.1,0.2] FORWARD_PACKET[0.1,0.2]". */
+    private static String describeCaps(List<CapabilityDto> caps) {
+        if (caps == null || caps.isEmpty()) {
+            return "[]";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (CapabilityDto c : caps) {
+            if (sb.length() > 0) {
+                sb.append(' ');
+            }
+            sb.append(c.getName()).append('[');
+            List<CapabilityDto.Version> vs = c.getVersion();
+            for (int i = 0; vs != null && i < vs.size(); i++) {
+                if (i > 0) {
+                    sb.append(',');
+                }
+                sb.append(vs.get(i).major()).append('.').append(vs.get(i).minor());
+            }
+            sb.append(']');
+        }
+        return sb.toString();
     }
 
     private void handleError() {

@@ -14,7 +14,11 @@ public enum Command {
     PING(1060),
     PONG(1070),
     HELLO(1080),
-    FLOW_CONTROL(1100);
+    FLOW_CONTROL(1100),
+    INIT_FILE_UPLOAD(1200),
+    UPLOAD_FILE_CHUNK(1300),
+    FINALIZE_FILE_UPLOAD(1400),
+    REQUEST_LOGS(1500);
 
     private final int value;
     private static final Map<Integer, Command> commandMap;
@@ -38,7 +42,11 @@ public enum Command {
                 Map.entry(PING.value, PING),
                 Map.entry(PONG.value, PONG),
                 Map.entry(HELLO.value, HELLO),
-                Map.entry(FLOW_CONTROL.value, FLOW_CONTROL)
+                Map.entry(FLOW_CONTROL.value, FLOW_CONTROL),
+                Map.entry(INIT_FILE_UPLOAD.value, INIT_FILE_UPLOAD),
+                Map.entry(UPLOAD_FILE_CHUNK.value, UPLOAD_FILE_CHUNK),
+                Map.entry(FINALIZE_FILE_UPLOAD.value, FINALIZE_FILE_UPLOAD),
+                Map.entry(REQUEST_LOGS.value, REQUEST_LOGS)
         );
     }
 

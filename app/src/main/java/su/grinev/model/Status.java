@@ -14,5 +14,7 @@ public enum Status {
     FORBIDDEN,
     RESERVED_IP_OCCUPIED,
     UNSUPPORTED,
-    OUTDATED
+    OUTDATED,
+    NOT_FOUND,
+    IO_ERROR
 }

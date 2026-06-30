@@ -7,8 +7,10 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 
-import java.util.List;
-
+/**
+ * LOGIN body. Carries only the JWT — the capability contract travels in the pre-auth HELLO
+ * (the server builds the session contract from HELLO caps and ignores anything sent at login).
+ */
 @Data
 @Builder
 @NoArgsConstructor
@@ -18,9 +20,5 @@ public class VpnLoginRequestDto {
 
     @Tag(0)
     private String jwt;
-
-    /** Protocol 0.2 capability contract, sent once HELLO is acknowledged (server spec §18). */
-    @Tag(1)
-    private List<CapabilityDto> capabilities;
 
 }

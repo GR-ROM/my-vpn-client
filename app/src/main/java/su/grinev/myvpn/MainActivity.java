@@ -49,6 +49,7 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
 
+        FileLogger.init(getApplicationContext(), 7);
         initializeDependencies();
 
         binding = ActivityMainBinding.inflate(getLayoutInflater());
@@ -110,6 +111,7 @@ public class MainActivity extends AppCompatActivity {
         stateManager.unobserveState(stateListener);
         super.onStop();
     }
+
 
     private void onConnectClicked(View v) {
         switch (currentState) {

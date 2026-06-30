@@ -7,6 +7,7 @@ import android.net.VpnService;
 import android.os.Build;
 import android.util.Log;
 
+import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -38,6 +39,13 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
     private boolean wasConnectedBeforeSleep = false;
     private boolean isSleeping = false;
     private static volatile PoolFactory poolFactory;
+    private static volatile MyVpnService instance;
+
+    /** Protect a socket from the VPN tunnel when the service is running; no-op when the VPN is down. */
+    public static boolean protectSocket(Socket socket) {
+        MyVpnService current = instance;
+        return current == null || current.protect(socket);
+    }
 
     private static PoolFactory getPoolFactory() {
         if (poolFactory == null) {
@@ -58,6 +66,8 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
     @Override
     public void onCreate() {
         super.onCreate();
+        instance = this;
+        FileLogger.init(getApplicationContext(), 7);
         Log.d("MyVPN", "onCreate: entry, SDK=" + Build.VERSION.SDK_INT + " (" + Build.VERSION.RELEASE + "), device=" + Build.MANUFACTURER + " " + Build.MODEL);
 
         try {
@@ -312,6 +322,9 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
 
     @Override
     public void onDestroy() {
+        if (instance == this) {
+            instance = null;
+        }
         if (trafficStats != null) {
             trafficStats.stop();
             trafficStats.reset();

@@ -25,7 +25,8 @@ public final class ClientCapabilities {
             cap(Command.FORWARD_PACKET, V0_1, V0_2),
             cap(Command.PING, V0_1),
             cap(Command.DISCONNECT, V0_1),
-            cap(Command.FLOW_CONTROL, V0_2)
+            cap(Command.FLOW_CONTROL, V0_2),
+            cap(Command.REQUEST_LOGS, V0_1)
     );
 
     private static final List<CapabilityDto> HELLO_PRE_AUTH = List.of(
