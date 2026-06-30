@@ -2,7 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
-val appVersion = "0.8.0"   // real app version — reported in HELLO; server meters logins by platform+version
+val appVersion = "0.9.0"   // real app version — reported in HELLO; server meters logins by platform+version
 val buildNumberFile = file("build-number.txt")
 // Bump the build number at configuration time when an actual build is requested, so the number
 // baked into the APK matches build-number.txt. (The old separate task bumped at EXECUTION time —
