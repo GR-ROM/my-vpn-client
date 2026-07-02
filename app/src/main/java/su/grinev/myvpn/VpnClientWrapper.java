@@ -17,6 +17,7 @@ import java.util.function.Consumer;
 import su.grinev.model.FlowAction;
 import su.grinev.model.VpnIpResponseDto;
 import su.grinev.myvpn.traffic.TrafficStatsManager;
+import su.grinev.pool.FastPool;
 import su.grinev.pool.PoolFactory;
 
 /**
@@ -64,7 +65,13 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
             PoolFactory poolFactory,
             Consumer<State> onStateChange
     ) throws IOException, InterruptedException {
-        super(tun, poolFactory.getFastPool("tunBufferPool", () -> ByteBuffer.allocateDirect(BUFFER_SIZE)));
+        // Non-blocking on purpose (factory default is blocking): the pool is hit once per
+        // upload packet from the TUN reader and released from the session writers — the
+        // blocking pool's semaphore + timeout meant a lock CAS per packet, a possible
+        // 100ms reader stall near exhaustion, and an IllegalStateException that could kill
+        // the reader (2 sessions x 512 queue slots can exceed the 1000 permits). Non-blocking
+        // get() always succeeds; in-flight buffers stay bounded by the tail-dropping send queues.
+        super(tun, new FastPool<>("tunBufferPool", () -> ByteBuffer.allocateDirect(BUFFER_SIZE), b -> {}, 100, 1000, false, 0));
         this.tun = tun;
         this.defaultRouteViaVpn = defaultRouteViaVpn;
         this.excludedApps = excludedApps;

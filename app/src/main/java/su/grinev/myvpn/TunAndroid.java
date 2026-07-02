@@ -19,12 +19,18 @@ import lombok.Getter;
 
 public class TunAndroid implements Tun {
 
+    // Poll timeout only bounds shutdown latency; longer = fewer idle wakeups (battery).
+    private static final int READ_POLL_TIMEOUT_MS = 2000;
+
     @Getter
     private final VpnService vpnService;
     private ParcelFileDescriptor tunFd;
     private FileChannel readChannel;
     private FileChannel writeChannel;
     private String deviceName;
+    // Preallocated for the single TUN reader thread — readPacket runs once per upload
+    // packet, and a fresh StructPollfd[] per call is pure GC churn on the hottest loop.
+    private StructPollfd[] readPollFds;
     public TunAndroid(VpnService vpnService) {
         this.vpnService = vpnService;
     }
@@ -58,6 +64,10 @@ public class TunAndroid implements Tun {
         }
         readChannel = new FileInputStream(tunFd.getFileDescriptor()).getChannel();
         writeChannel = new FileOutputStream(tunFd.getFileDescriptor()).getChannel();
+        StructPollfd pollFd = new StructPollfd();
+        pollFd.fd = tunFd.getFileDescriptor();
+        pollFd.events = (short) OsConstants.POLLIN;
+        readPollFds = new StructPollfd[]{pollFd};
         deviceName = "tun0";
     }
 
@@ -84,18 +94,18 @@ public class TunAndroid implements Tun {
 
         readChannel = null;
         writeChannel = null;
+        readPollFds = null;
         tunFd = null;
         deviceName = null;
     }
 
     @Override
     public int readPacket(ByteBuffer buf) throws IOException {
-        if (readChannel != null) {
-            StructPollfd[] fds = {new StructPollfd()};
-            fds[0].fd = tunFd.getFileDescriptor();
-            fds[0].events = (short) OsConstants.POLLIN;
+        StructPollfd[] fds = readPollFds;
+        if (readChannel != null && fds != null) {
+            fds[0].revents = 0;
             try {
-                int result = Os.poll(fds, 500); // 500ms timeout to allow clean shutdown
+                int result = Os.poll(fds, READ_POLL_TIMEOUT_MS);
                 if (result <= 0 || (fds[0].revents & OsConstants.POLLIN) == 0) {
                     return 0;
                 }

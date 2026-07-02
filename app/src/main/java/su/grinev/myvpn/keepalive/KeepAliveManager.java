@@ -101,7 +101,9 @@ public class KeepAliveManager {
     }
 
     public void onPacketReceived() {
-        lastPacketReceivedTime.set(System.currentTimeMillis());
+        // lazySet: called once per received frame; the watchdog samples every 5s, so an
+        // unfenced store is enough — drops the full memory barrier from the download path.
+        lastPacketReceivedTime.lazySet(System.currentTimeMillis());
     }
 
     public void onPongReceived() {

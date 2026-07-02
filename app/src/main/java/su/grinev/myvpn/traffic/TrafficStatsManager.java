@@ -11,6 +11,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Consumer;
 
 /**
@@ -21,8 +22,11 @@ public class TrafficStatsManager {
     private static final TrafficStatsManager INSTANCE = new TrafficStatsManager();
     private static final int MAX_HISTORY_SIZE = 3600;
     private static final long UPDATE_INTERVAL_MS = 1000; // 1 second
-    private final AtomicLong incomingBytes = new AtomicLong(0);
-    private final AtomicLong outgoingBytes = new AtomicLong(0);
+    // LongAdder, not AtomicLong: these are add()'d once per packet from the TUN reader and
+    // both session worker threads — a single AtomicLong cache line ping-pongs between cores.
+    // LongAdder stripes internally; the 1s sampler and UI just sum().
+    private final LongAdder incomingBytes = new LongAdder();
+    private final LongAdder outgoingBytes = new LongAdder();
     private final AtomicLong lastIncomingBytes = new AtomicLong(0);
     private final AtomicLong lastOutgoingBytes = new AtomicLong(0);
     private final ArrayDeque<TrafficStats> history = new ArrayDeque<>();
@@ -46,8 +50,8 @@ public class TrafficStatsManager {
      */
     public void start() {
         if (isRunning.compareAndSet(false, true)) {
-            lastIncomingBytes.set(incomingBytes.get());
-            lastOutgoingBytes.set(outgoingBytes.get());
+            lastIncomingBytes.set(incomingBytes.sum());
+            lastOutgoingBytes.set(outgoingBytes.sum());
             mainHandler.postDelayed(updateRunnable, UPDATE_INTERVAL_MS);
         }
     }
@@ -64,8 +68,8 @@ public class TrafficStatsManager {
      * Reset all statistics.
      */
     public void reset() {
-        incomingBytes.set(0);
-        outgoingBytes.set(0);
+        incomingBytes.reset();
+        outgoingBytes.reset();
         lastIncomingBytes.set(0);
         lastOutgoingBytes.set(0);
         synchronized (historyLock) {
@@ -77,22 +81,22 @@ public class TrafficStatsManager {
      * Record incoming bytes.
      */
     public void addIncomingBytes(int bytes) {
-        incomingBytes.addAndGet(bytes);
+        incomingBytes.add(bytes);
     }
 
     /**
      * Record outgoing bytes.
      */
     public void addOutgoingBytes(int bytes) {
-        outgoingBytes.addAndGet(bytes);
+        outgoingBytes.add(bytes);
     }
 
     /**
      * Get current statistics snapshot.
      */
     public TrafficStats getCurrentStats() {
-        long incoming = incomingBytes.get();
-        long outgoing = outgoingBytes.get();
+        long incoming = incomingBytes.sum();
+        long outgoing = outgoingBytes.sum();
         long lastIncoming = lastIncomingBytes.get();
         long lastOutgoing = lastOutgoingBytes.get();
 
@@ -139,8 +143,8 @@ public class TrafficStatsManager {
     private void computeAndNotify() {
         if (!isRunning.get()) return;
 
-        long currentIncoming = incomingBytes.get();
-        long currentOutgoing = outgoingBytes.get();
+        long currentIncoming = incomingBytes.sum();
+        long currentOutgoing = outgoingBytes.sum();
         long prevIncoming = lastIncomingBytes.getAndSet(currentIncoming);
         long prevOutgoing = lastOutgoingBytes.getAndSet(currentOutgoing);
 

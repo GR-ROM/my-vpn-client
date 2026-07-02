@@ -19,24 +19,34 @@ public abstract class TunHandler {
     }
 
     private void handleTunPackets() {
-        try {
-            while (!stop) {
-                ByteBuffer buf = bufferPool.get();
-                boolean handed = false;
-                try {
-                    int bytesRead = tun.readPacket(buf);
-                    if (bytesRead > 20) {
-                        buf.flip();
-                        handed = onTunPacketReceived(buf);   // true if the consumer took ownership
-                    }
-                } finally {
-                    if (!handed) {
-                        bufferPool.release(buf);
-                    }
+        while (!stop) {
+            // pool.get() stays inside the guard: a pool RuntimeException must not escape
+            // and silently kill the reader thread (upload would be dead while the UI
+            // still shows LIVE). IOException = TUN closed/revoked — exit; the service
+            // teardown owns recovery.
+            ByteBuffer buf = null;
+            boolean handed = false;
+            try {
+                buf = bufferPool.get();
+                int bytesRead = tun.readPacket(buf);
+                if (bytesRead > 20) {
+                    buf.flip();
+                    handed = onTunPacketReceived(buf);   // true if the consumer took ownership
+                }
+            } catch (IOException ioException) {
+                if (!stop) {
+                    DebugLog.log("TUN reader stopped: " + ioException);
+                }
+                break;   // finally still releases buf
+            } catch (RuntimeException e) {
+                if (!stop) {
+                    DebugLog.log("TUN reader error (continuing): " + e);
+                }
+            } finally {
+                if (buf != null && !handed) {
+                    bufferPool.release(buf);
                 }
             }
-        } catch (IOException ioException) {
-            ioException.printStackTrace();
         }
     }
 

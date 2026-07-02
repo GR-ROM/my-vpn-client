@@ -609,14 +609,16 @@ public class VpnClient {
         }
     }
 
-    // Read one length-prefixed frame into readBuffer (length header re-written at [0..4)); returns length.
+    // Read one length-prefixed frame into readBuffer (length header lands at [0..4)); returns length.
     private int readFrame() throws IOException {
-        int packetSize = serverInputStream.readInt();
+        // readInt() would issue four single-byte read() calls, each taking Conscrypt's
+        // stream lock — read the header straight into readBuffer and parse it there.
+        serverInputStream.readFully(readBuffer, 0, 4);
+        int packetSize = ((readBuffer[0] & 0xFF) << 24)
+                | ((readBuffer[1] & 0xFF) << 16)
+                | ((readBuffer[2] & 0xFF) << 8)
+                | (readBuffer[3] & 0xFF);
         if (packetSize <= 4 || packetSize > MAX_PACKET_SIZE) { throw new IOException("Invalid packet size: " + packetSize); }
-        readBuffer[0] = (byte) (packetSize >> 24);
-        readBuffer[1] = (byte) (packetSize >> 16);
-        readBuffer[2] = (byte) (packetSize >> 8);
-        readBuffer[3] = (byte) packetSize;
         serverInputStream.readFully(readBuffer, 4, packetSize - 4);
         return packetSize;
     }
