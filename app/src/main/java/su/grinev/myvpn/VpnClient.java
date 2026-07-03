@@ -783,7 +783,21 @@ public class VpnClient {
     // send writer (which releases it after sending) or released here if the queue is full.
     public void sendToServer(ByteBuffer packet) {
         if (!sendQueue.offer(packet)) {
-            bufferReleaser.accept(packet);   // queue full — drop (inner TCP retransmits)
+            releaseQuietly(packet);   // queue full — drop (inner TCP retransmits)
+        }
+    }
+
+    /**
+     * Release a pool buffer without ever throwing. Pool bookkeeping exceptions (e.g. the
+     * "Double release detected" IllegalStateException when the counter goes transiently negative
+     * during the disconnect burst) must not escape: on the TUN reader (a plain thread) they crash
+     * the app, and inside the batch-release loops they'd abandon the remaining buffers.
+     */
+    private void releaseQuietly(ByteBuffer buffer) {
+        try {
+            bufferReleaser.accept(buffer);
+        } catch (RuntimeException e) {
+            DebugLog.log("[" + name + "] buffer release failed (ignored): " + e);
         }
     }
 
@@ -809,14 +823,14 @@ public class VpnClient {
                 handleError();
             } finally {
                 for (int i = 0; i < batch.size(); i++) {
-                    bufferReleaser.accept(batch.get(i));
+                    releaseQuietly(batch.get(i));
                 }
                 batch.clear();
             }
         }
         ByteBuffer leftover;
         while ((leftover = sendQueue.poll()) != null) {
-            bufferReleaser.accept(leftover);   // release anything left on shutdown
+            releaseQuietly(leftover);   // release anything left on shutdown
         }
     }
 

@@ -112,9 +112,10 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
             // Re-protect sockets after the tunnel exists (idempotent; covers the just-LIVE session). On
             // Android 10, protect() before the tunnel may not persist.
             vpnClients.forEach(VpnClient::reprotectSocket);
-            if (!super.running) {
-                super.start();
-            }
+            // start() is idempotent (guarded internally). The old `if (!running)` check here raced:
+            // two sessions going LIVE together could both pass it and the second Thread.start()
+            // threw IllegalThreadStateException.
+            super.start();
         } catch (IOException | InterruptedException e) {
             throw new RuntimeException(e);
         }
