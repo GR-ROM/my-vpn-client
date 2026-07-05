@@ -4,9 +4,11 @@ import static su.grinev.myvpn.NetUtils.intToIpv4;
 import static su.grinev.myvpn.VpnClient.BUFFER_SIZE;
 
 import android.net.ConnectivityManager;
+import android.net.Network;
 import android.net.VpnService;
 
 import java.io.IOException;
+import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -87,10 +89,29 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
             vpnClients.add(new VpnClient(serverAddress, serverPort, jwt,
                     this::onClientPacketReceived, this::onIpAssigned, poolFactory,
                     state -> onSessionStateChanged(idx, state),
-                    vpnService::protect, bufferPool::release,
+                    vpnService::protect, this::bindToUnderlyingNetwork, bufferPool::release,
                     networkMonitor::isAvailable, "s" + idx));
         }
         networkMonitor.start();
+    }
+
+    /**
+     * Pin a not-yet-connected server socket to the current underlying network so the connect follows
+     * that path's routing table rather than the process default (which lags a Wi-Fi↔cellular handover
+     * → ENETUNREACH / handshake timeouts). Best-effort: if no path is up or bind fails, we leave the
+     * socket on the default and let the normal retry/backoff handle it.
+     */
+    private void bindToUnderlyingNetwork(Socket socket) {
+        Network net = networkMonitor.getCurrentNetwork();
+        if (net == null) {
+            return;
+        }
+        try {
+            net.bindSocket(socket);
+        } catch (IOException e) {
+            // The path may have just vanished (handover); the connect will fail and we retry.
+            DebugLog.log("bindSocket to " + net + " failed: " + e.getMessage());
+        }
     }
 
     private void onIpAssigned(VpnIpResponseDto vpnIpResponseDto) {

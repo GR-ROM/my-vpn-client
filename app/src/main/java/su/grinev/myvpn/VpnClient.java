@@ -108,6 +108,10 @@ public class VpnClient {
     private final Consumer<VpnIpResponseDto> onIpAssigned;
     private final Consumer<State> onStateChange;
     private final Consumer<java.net.Socket> socketProtector;
+    // Binds the raw socket to the current underlying network (Wi-Fi/cellular) before connect, so a
+    // handover fails over deterministically instead of racing the process default network. Supplied by
+    // VpnClientWrapper / DefaultNetworkMonitor; a no-op consumer when unwired (legacy/tests).
+    private final Consumer<java.net.Socket> socketBinder;
     // True when the device has a usable default network link. Lets us distinguish "server unreachable
     // but link is up" (→ progressive backoff) from "no network at all" (→ park, wake on event). May be
     // null (legacy: treated as always available). Supplied by VpnClientWrapper / DefaultNetworkMonitor.
@@ -200,6 +204,7 @@ public class VpnClient {
             PoolFactory poolFactory,
             Consumer<State> onStateChange,
             Consumer<Socket> socketProtector,
+            Consumer<Socket> socketBinder,
             Consumer<ByteBuffer> bufferReleaser,
             BooleanSupplier networkAvailable,
             String name) throws IOException, InterruptedException {
@@ -211,6 +216,7 @@ public class VpnClient {
         this.state = DISCONNECTED;
         this.onIpAssigned = onIpAssigned;
         this.socketProtector = socketProtector;
+        this.socketBinder = socketBinder;
         this.networkAvailable = networkAvailable;
         this.name = name;
         this.codec = Codec.messagePack(poolFactory, BUFFER_SIZE, Binder.ClassNameMode.SIMPLE_NAME);
@@ -393,14 +399,21 @@ public class VpnClient {
                 SSLSocketFactory factory = sslContext.getSocketFactory();
                 DebugLog.log("[" + name + "] Connecting to " + serverAddress + ":" + serverPort);
 
-                // Connect over the system default network (protected from our own TUN). Multisession =
-                // N such connections; the OS picks the best network (Wi-Fi/cellular) and a network change
-                // triggers an immediate reconnect (see VpnClientWrapper). Use a LOCAL for setup: a
-                // concurrent forceReconnect()/closeConnection() may null the rawSocket field mid-setup —
-                // operating on the local avoids an NPE (a closed socket just throws on connect → retry).
+                // Connect over a concrete underlying network (protected from our own TUN). Multisession =
+                // N such connections; a network change triggers an immediate reconnect (see
+                // VpnClientWrapper). Use a LOCAL for setup: a concurrent forceReconnect()/closeConnection()
+                // may null the rawSocket field mid-setup — operating on the local avoids an NPE (a closed
+                // socket just throws on connect → retry).
                 Socket rawSock = new Socket();
                 rawSocket = rawSock;
                 socketProtector.accept(rawSock);
+                // Pin the socket to the current underlying network BEFORE connect. protect() only keeps us
+                // out of the TUN — it does not choose a path. On a Wi-Fi→cellular handover the process
+                // default network is briefly stale, so an unbound connect went out a dead route
+                // (ENETUNREACH, then TLS handshake read-timeouts) and only recovered by luck on the next
+                // switch. bindSocket() to the newest path (from DefaultNetworkMonitor) makes failover
+                // deterministic. No-op when no supplier is wired (legacy/tests).
+                socketBinder.accept(rawSock);
                 rawSock.setTcpNoDelay(true);
                 rawSock.setKeepAlive(true);
                 rawSock.setSoTimeout(SOCKET_READ_TIMEOUT_MS);

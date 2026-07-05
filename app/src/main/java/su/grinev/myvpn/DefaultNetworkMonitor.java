@@ -31,6 +31,11 @@ public class DefaultNetworkMonitor {
     private final ConnectivityManager cm;
     private final Listener listener;
     private final Set<Network> networks = ConcurrentHashMap.newKeySet();
+    // The path our sockets should bind to (VpnClientWrapper.bindToUnderlyingNetwork). Newest path wins:
+    // on a Wi-Fi→cellular handover cellular arrives via onAvailable and becomes current, so the next
+    // connect pins to it instead of the stale/gone default network (→ was ENETUNREACH / handshake
+    // timeouts until the OS default caught up). null when no underlying path exists.
+    private volatile Network current;
     private ConnectivityManager.NetworkCallback callback;
 
     public DefaultNetworkMonitor(ConnectivityManager cm, Listener listener) {
@@ -47,6 +52,7 @@ public class DefaultNetworkMonitor {
             @Override
             public void onAvailable(Network network) {
                 networks.add(network);
+                current = network;   // newest path is preferred for the next connect
                 DebugLog.log("Underlying network available: " + network + " (total=" + networks.size() + ")");
                 listener.onNetworkChanged();   // a path appeared → wake down sessions / fail over to it
             }
@@ -54,6 +60,10 @@ public class DefaultNetworkMonitor {
             @Override
             public void onLost(Network network) {
                 networks.remove(network);
+                if (network.equals(current)) {
+                    // The preferred path went away → fail over to any surviving one (null if none left).
+                    current = networks.stream().findFirst().orElse(null);
+                }
                 DebugLog.log("Underlying network lost: " + network + " (total=" + networks.size() + ")");
                 // Notify only when the LAST path is gone (→ sessions park). When a path survives, a
                 // session that was using the lost one dies and reconnects via a 1s backoff onto the
@@ -76,10 +86,20 @@ public class DefaultNetworkMonitor {
             callback = null;
         }
         networks.clear();
+        current = null;
     }
 
     /** True while at least one underlying internet network exists. */
     public boolean isAvailable() {
         return !networks.isEmpty();
+    }
+
+    /**
+     * The underlying network a new server socket should bind to, or {@code null} if none is up.
+     * Binding (see {@link VpnClient}) pins the connect to this concrete path instead of the process
+     * default network, which lags behind on a Wi-Fi↔cellular handover.
+     */
+    public Network getCurrentNetwork() {
+        return current;
     }
 }
