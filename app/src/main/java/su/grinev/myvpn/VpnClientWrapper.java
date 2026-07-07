@@ -8,10 +8,14 @@ import android.net.VpnService;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 import su.grinev.model.FlowAction;
@@ -36,7 +40,10 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
     private static final int SESSION_COUNT = 2;
 
     private final Tun tun;
-    private final List<VpnClient> vpnClients = new ArrayList<>();
+    // CopyOnWriteArrayList: each VpnClient starts connecting from its own constructor, so a fast
+    // session can reach LIVE and iterate this list (onIpAssigned → reprotectSocket) while the
+    // wrapper constructor is still adding the remaining sessions — an ArrayList would CME there.
+    private final List<VpnClient> vpnClients = new CopyOnWriteArrayList<>();
     private final boolean defaultRouteViaVpn;
     private final Set<String> excludedApps;
     private final TrafficStatsManager trafficStats = TrafficStatsManager.getInstance();
@@ -46,6 +53,13 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
     private final Object stateLock = new Object();
     private final State[] sessionStates = new State[SESSION_COUNT];
 
+    // Set (before anything else) by stop(): once the service tears this wrapper down, its session
+    // callbacks must no longer reach the service. Without this, stop()'s own setState(SHUTDOWN) on
+    // every session aggregates to SHUTDOWN and re-enters MyVpnService.onVpnStateChanged — which on
+    // the reconnect() path queued a stopVpnSync that killed the FRESH connection and the service
+    // right after it started (the "have to toggle twice" symptom).
+    private volatile boolean stopped = false;
+
     // Establish the TUN once (on the first session to go LIVE). All sessions share the same virtual IP,
     // so re-establishing the interface per session / per reconnect would needlessly micro-drop traffic.
     private final Object tunLock = new Object();
@@ -54,6 +68,23 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
     // Reusable liveness snapshot for flow selection (onTunPacketReceived is single-producer: the
     // TunHandler reader thread), so there's no per-packet allocation.
     private final boolean[] liveScratch = new boolean[SESSION_COUNT];
+
+    // --- Diagnostics: periodic heartbeat + data-plane counters, added to diagnose "shows LIVE but
+    // no traffic" reports. TUN-reader-side counters are single-writer volatiles; TUN-write-side ones
+    // are AtomicLongs (both session worker threads write there).
+    private static final long HEARTBEAT_INTERVAL_S = 30;
+    private final ScheduledExecutorService heartbeat = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "DiagHeartbeat");
+        t.setDaemon(true);
+        return t;
+    });
+    private volatile long tunRxPackets;        // TUN reader thread: packets handed to a session
+    private volatile long tunRxBytes;
+    private volatile long tunDropsNoSession;   // TUN reader thread: dropped, no LIVE session
+    private final AtomicLong tunTxPackets = new AtomicLong();
+    private final AtomicLong tunTxBytes = new AtomicLong();
+    private final AtomicLong tunWriteErrors = new AtomicLong();
+    private volatile State lastAggregate = State.DISCONNECTED;
 
     public VpnClientWrapper(
             TunAndroid tun,
@@ -91,6 +122,34 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
                     networkMonitor::isAvailable, "s" + idx));
         }
         networkMonitor.start();
+        heartbeat.scheduleWithFixedDelay(this::logHeartbeat,
+                HEARTBEAT_INTERVAL_S, HEARTBEAT_INTERVAL_S, TimeUnit.SECONDS);
+    }
+
+    /**
+     * Periodic one-line health snapshot. Reading a stretch of these around a "connected but no
+     * internet" episode shows which invariant broke: net=DOWN (no underlying network), tunReader
+     * dead (upload path gone), a session stuck LIVE with ka=off / stale lastRx (dead link
+     * undetected), or flow=STOP lingering after screen-on (downlink left paused). A gap in
+     * heartbeats means the process itself was frozen (Doze) or killed.
+     */
+    private void logHeartbeat() {
+        try {
+            StringBuilder sb = new StringBuilder(320);
+            sb.append("HB net=").append(networkMonitor.isAvailable() ? "up" : "DOWN");
+            sb.append(" agg=").append(lastAggregate);
+            sb.append(" tunReader=").append(!super.running ? "off" : (readerThread.isAlive() ? "alive" : "DEAD"));
+            sb.append(" tunRx=").append(tunRxPackets).append("p/").append(tunRxBytes >> 10).append("K");
+            sb.append(" noSessDrop=").append(tunDropsNoSession);
+            sb.append(" tunTx=").append(tunTxPackets.get()).append("p/").append(tunTxBytes.get() >> 10).append("K");
+            sb.append(" tunWErr=").append(tunWriteErrors.get());
+            for (VpnClient c : vpnClients) {
+                sb.append(" | ").append(c.diagSummary());
+            }
+            DebugLog.log(sb.toString());
+        } catch (Throwable t) {
+            DebugLog.log("HB failed: " + t);   // never let the heartbeat task die silently
+        }
     }
 
     private void onIpAssigned(VpnIpResponseDto vpnIpResponseDto) {
@@ -128,21 +187,37 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
      */
     @Override
     public void onNetworkChanged() {
+        if (stopped) {
+            return;   // in-flight monitor callback during teardown — don't wake stopping sessions
+        }
+        int woken = 0;
         for (VpnClient c : vpnClients) {
             if (c.getState() != State.LIVE) {
                 c.forceReconnect();
+                woken++;
             }
         }
+        DebugLog.log("Network changed: forced reconnect on " + woken + "/" + vpnClients.size()
+                + " non-LIVE sessions (net=" + (networkMonitor.isAvailable() ? "up" : "DOWN") + ")");
     }
 
     // ==================== State aggregation ====================
 
     /** Forward a single aggregate state so one session flapping doesn't drag the UI off LIVE. */
     private void onSessionStateChanged(int index, State state) {
+        if (stopped) {
+            return;   // teardown-induced transitions (SHUTDOWN etc.) must not reach the service
+        }
         State aggregate;
+        boolean aggregateChanged;
         synchronized (stateLock) {
             sessionStates[index] = state;
             aggregate = aggregateStateLocked();
+            aggregateChanged = aggregate != lastAggregate;
+            lastAggregate = aggregate;
+        }
+        if (aggregateChanged) {
+            DebugLog.log("Aggregate state -> " + aggregate);
         }
         aggregateStateConsumer.accept(aggregate);
     }
@@ -174,6 +249,9 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
     // ==================== Lifecycle / public API ====================
 
     public void stop() {
+        stopped = true;   // silence session callbacks BEFORE tearing anything down
+        DebugLog.log("VpnClientWrapper.stop()");
+        heartbeat.shutdownNow();
         super.stop();
         networkMonitor.stop();
         vpnClients.forEach(VpnClient::stop);
@@ -195,11 +273,13 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
     /** Suspend the server→client downlink (screen-off): FLOW_CONTROL STOP on every connection. MUST be
      *  called off the main thread (the sends take each session's output lock). */
     public void suspendDownlink() {
+        DebugLog.log("suspendDownlink: FLOW_CONTROL STOP to all sessions");
         vpnClients.forEach(c -> c.sendFlowControl(FlowAction.STOP));
     }
 
     /** Resume the downlink (screen-on): FLOW_CONTROL START on every connection. */
     public void resumeDownlink() {
+        DebugLog.log("resumeDownlink: FLOW_CONTROL START to all sessions");
         vpnClients.forEach(c -> c.sendFlowControl(FlowAction.START));
     }
 
@@ -209,8 +289,11 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
     public boolean onTunPacketReceived(ByteBuffer packet) {
         int idx = selectLiveSession(NetUtils.fiveTupleHash(packet));
         if (idx < 0) {
+            tunDropsNoSession++;
             return false;   // no live session — not handed off, TunHandler releases the buffer
         }
+        tunRxPackets++;
+        tunRxBytes += packet.remaining();
         trafficStats.addOutgoingBytes(packet.remaining());
         vpnClients.get(idx).sendToServer(packet);   // takes ownership of packet
         return true;
@@ -243,10 +326,20 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
     }
 
     public void onClientPacketReceived(ByteBuffer packet) {
+        int len = packet.remaining();
         try {
-            trafficStats.addIncomingBytes(packet.remaining());
+            trafficStats.addIncomingBytes(len);
             tun.writePacket(packet);
+            tunTxPackets.incrementAndGet();
+            tunTxBytes.addAndGet(len);
         } catch (IOException e) {
+            // A failing TUN write means the downlink dies at the very last hop while sessions still
+            // look healthy — log it distinctly (rate-limited) instead of masquerading as a generic
+            // connection error in the session's read loop.
+            long n = tunWriteErrors.incrementAndGet();
+            if (n == 1 || n % 500 == 0) {
+                DebugLog.log("TUN write failed (#" + n + "): " + e);
+            }
             throw new RuntimeException(e);
         }
     }

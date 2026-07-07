@@ -68,7 +68,7 @@ public class ForwardV2CodecTest {
     @Test
     public void rejectsNonForwardFrame() {
         byte[] notV2 = new byte[20];
-        notV2[4] = (byte) 0x84;  // v0.1 full envelope map(4), not the v0.2 prefix
+        notV2[4] = (byte) 0x84;  // legacy v0.1 full-envelope map(4) — no longer forwarded, must not match the v0.2 prefix
         assertFalse(ForwardV2Codec.isForward(notV2, notV2.length));
     }
 

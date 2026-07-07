@@ -11,6 +11,7 @@ import java.net.Socket;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 
 import su.grinev.myvpn.handlers.ScreenStateHandler;
@@ -63,10 +64,25 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
         return poolFactory;
     }
 
+    /**
+     * Run a task on the service executor without ever crashing the calling thread: a late callback
+     * from a winding-down session (VpnClient.stop waits only 1s for its worker) can arrive after
+     * onDestroy has shut the executor down, and a bare CompletableFuture.runAsync would then throw
+     * RejectedExecutionException into a thread with no handler — killing the whole app.
+     */
+    private void runOnExecutor(Runnable task) {
+        try {
+            CompletableFuture.runAsync(task, executor);
+        } catch (RejectedExecutionException e) {
+            DebugLog.log("Executor rejected task (service already shutting down)");
+        }
+    }
+
     @Override
     public void onCreate() {
         super.onCreate();
         instance = this;
+        CrashLogger.install();
         FileLogger.init(getApplicationContext(), 7);
         Log.d("MyVPN", "onCreate: entry, SDK=" + Build.VERSION.SDK_INT + " (" + Build.VERSION.RELEASE + "), device=" + Build.MANUFACTURER + " " + Build.MODEL);
 
@@ -106,7 +122,7 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
         if (intent != null && ACTION_DISCONNECT.equals(intent.getAction())) {
             DebugLog.log("onStartCommand: DISCONNECT action received");
             wasConnectedBeforeSleep = false;
-            CompletableFuture.runAsync(this::stopVpnSync, executor);
+            runOnExecutor(this::stopVpnSync);
             return START_NOT_STICKY;
         }
 
@@ -122,7 +138,14 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
             DebugLog.log("onStartCommand: screenStateHandler.register FAILED: " + Log.getStackTraceString(e));
         }
 
-        startVpnConnection();
+        // Connect on the single-thread executor: it serializes behind any in-flight stopVpnSync
+        // (fast off→on toggle) instead of racing it, and un-latches isStopping — that flag was never
+        // reset, so a reconnect on a reused service instance had all state callbacks silently
+        // swallowed (UI stuck, "have to toggle again").
+        runOnExecutor(() -> {
+            isStopping = false;
+            startVpnConnection();
+        });
         return START_STICKY;
     }
 
@@ -199,13 +222,13 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
                 trafficStats.stop();
                 updateState(state);
                 if (!isSleeping) {
-                    CompletableFuture.runAsync(this::stopVpnSync, executor);
+                    runOnExecutor(this::stopVpnSync);
                 }
                 break;
             case ERROR:
                 trafficStats.stop();
                 updateState(state);
-                CompletableFuture.runAsync(this::stopVpnSync, executor);
+                runOnExecutor(this::stopVpnSync);
                 break;
             default:
                 updateState(state);
@@ -227,7 +250,10 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
     @Override
     public void onScreenOff() {
         synchronized (vpnLock) {
-            if (vpnClientWrapper != null && vpnClientWrapper.isConnectionAlive()) {
+            boolean alive = vpnClientWrapper != null && vpnClientWrapper.isConnectionAlive();
+            DebugLog.log("onScreenOff: connectionAlive=" + alive
+                    + (alive ? " -> suspending downlink + keepalive" : " -> nothing to suspend"));
+            if (alive) {
                 wasConnectedBeforeSleep = true;
                 isSleeping = true;
                 // Pause the whole server→client downlink while the screen is off (FLOW_CONTROL STOP on
@@ -236,7 +262,7 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
                 // during a network write) — doing it inline would block the main thread → ANR → the OS
                 // kills the service. Offload to the executor.
                 final VpnClientWrapper w = vpnClientWrapper;
-                CompletableFuture.runAsync(w::suspendDownlink, executor);
+                runOnExecutor(w::suspendDownlink);
                 vpnClientWrapper.pauseKeepAlive();
                 if (trafficStats != null) {
                     trafficStats.stop();
@@ -249,6 +275,7 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
     @Override
     public void onScreenOn() {
         isSleeping = false;
+        DebugLog.log("onScreenOn: wasConnectedBeforeSleep=" + wasConnectedBeforeSleep);
 
         if (wasConnectedBeforeSleep) {
             wasConnectedBeforeSleep = false;
@@ -256,6 +283,8 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
             boolean connectionAlive;
             synchronized (vpnLock) {
                 connectionAlive = vpnClientWrapper != null && vpnClientWrapper.isConnectionAlive();
+                DebugLog.log("onScreenOn: connectionAlive=" + connectionAlive
+                        + (connectionAlive ? " -> resuming keepalive + downlink" : " -> full reconnect"));
                 if (connectionAlive) {
                     vpnClientWrapper.resumeKeepAlive();
                     // Resume the downlink on wake by re-applying the multipath flow policy (primary
@@ -264,7 +293,7 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
                     // output lock). Harmless if a session was re-established meanwhile — the server's
                     // flow defaults to enabled on a fresh login and the policy re-asserts on LIVE.
                     final VpnClientWrapper w = vpnClientWrapper;
-                    CompletableFuture.runAsync(w::resumeDownlink, executor);
+                    runOnExecutor(w::resumeDownlink);
                 }
             }
 
@@ -283,7 +312,8 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
     // ==================== Connection Management ====================
 
     private void reconnect() {
-        CompletableFuture.runAsync(() -> {
+        DebugLog.log("reconnect(): full teardown + restart");
+        runOnExecutor(() -> {
             notificationManager.updateNotification(R.string.notif_reconnecting);
             stateManager.setState(State.CONNECTING);
             synchronized (vpnLock) {
@@ -293,13 +323,15 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
                 }
                 isConnecting = false;
             }
+            isStopping = false;
             startVpnConnection();
-        }, executor);
+        });
     }
 
     private void stopVpnSync() {
         if (isStopping) return;
         isStopping = true;
+        DebugLog.log("stopVpnSync: stopping VPN service");
 
         synchronized (vpnLock) {
             if (vpnClientWrapper != null) {
@@ -320,8 +352,22 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
 
     // ==================== Lifecycle ====================
 
+    /**
+     * The system revoked our VPN (another VPN app took over, or the user disabled it in settings).
+     * Without this override the default implementation kills the service silently — the TUN stops
+     * carrying traffic while the app may still render a connected state: exactly the reported
+     * "green button but no internet" shape. Log it loudly and go through our own orderly shutdown.
+     */
+    @Override
+    public void onRevoke() {
+        DebugLog.log("onRevoke: VPN revoked by the system — stopping");
+        wasConnectedBeforeSleep = false;
+        runOnExecutor(this::stopVpnSync);
+    }
+
     @Override
     public void onDestroy() {
+        DebugLog.log("MyVpnService.onDestroy");
         if (instance == this) {
             instance = null;
         }

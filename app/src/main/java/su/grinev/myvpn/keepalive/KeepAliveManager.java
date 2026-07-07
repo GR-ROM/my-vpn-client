@@ -24,6 +24,7 @@ public class KeepAliveManager {
     private static final long KEEPALIVE_INTERVAL_MS = 30000; // 30 seconds
     private static final long PONG_TIMEOUT_MS = 15000; // 15 seconds to wait for PONG
     private static final long CHECK_INTERVAL_MS = 5000; // Check every 5 seconds
+    private final String name;   // session label for logs (e.g. "s0"/"s1")
     private final Object lock;
     private final Codec codec;
     private final KeepAliveCallback callback;
@@ -48,7 +49,8 @@ public class KeepAliveManager {
     private final RequestDto<Void> pingRequestDto = new RequestDto<>();
     private final Packet<RequestDto<?>> pingPacketDto = new Packet<>();
 
-    public KeepAliveManager(Object lock, Codec codec, KeepAliveCallback callback) {
+    public KeepAliveManager(String name, Object lock, Codec codec, KeepAliveCallback callback) {
+        this.name = name;
         this.lock = lock;
         this.codec = codec;
         this.callback = callback;
@@ -72,6 +74,7 @@ public class KeepAliveManager {
                     CHECK_INTERVAL_MS,
                     TimeUnit.MILLISECONDS
             );
+            DebugLog.log("[" + name + "] keepalive started");
         }
     }
 
@@ -83,7 +86,22 @@ public class KeepAliveManager {
             }
             outputStream = null;
             awaitingPong.set(false);
+            // While stopped NOTHING detects a dead connection — a session can sit in LIVE forever.
+            // Every stop must be matched by a start (login or resume); log it so a missing resume
+            // is visible in the diagnostics.
+            DebugLog.log("[" + name + "] keepalive stopped (dead-connection detection OFF)");
         }
+    }
+
+    /** True while the watchdog is armed (diagnostics: while false, a dead link is never detected). */
+    public boolean isRunning() {
+        return isRunning.get();
+    }
+
+    /** Millis since the last frame arrived from the server, or -1 if none seen yet. */
+    public long millisSinceLastPacket() {
+        long t = lastPacketReceivedTime.get();
+        return t == 0 ? -1 : System.currentTimeMillis() - t;
     }
 
     public void destroy() {
@@ -109,7 +127,7 @@ public class KeepAliveManager {
     public void onPongReceived() {
         if (awaitingPong.compareAndSet(true, false)) {
             long rtt = System.currentTimeMillis() - pingSentTime.get();
-            DebugLog.log("PONG RTT: " + rtt + "ms");
+            DebugLog.log("[" + name + "] PONG RTT: " + rtt + "ms");
         }
         lastPacketReceivedTime.set(System.currentTimeMillis());
     }
@@ -123,7 +141,7 @@ public class KeepAliveManager {
         if (awaitingPong.get()) {
             long timeSincePing = now - pingSentTime.get();
             if (timeSincePing > PONG_TIMEOUT_MS) {
-                DebugLog.log("PONG timeout after " + timeSincePing + "ms, connection dead");
+                DebugLog.log("[" + name + "] PONG timeout after " + timeSincePing + "ms, connection dead");
                 awaitingPong.set(false);
                 if (isRunning.compareAndSet(true, false)) {
                     callback.onConnectionDead();
@@ -154,7 +172,7 @@ public class KeepAliveManager {
                     codec.serialize(pingPacketDto, out);
                 }
             } catch (IOException | RuntimeException e) {
-                DebugLog.log("Failed to send PING: " + e.getMessage());
+                DebugLog.log("[" + name + "] Failed to send PING: " + e.getMessage());
                 if (isRunning.compareAndSet(true, false)) {
                     callback.onConnectionDead();
                 }

@@ -1,7 +1,6 @@
 package su.grinev.myvpn;
 
 import static su.grinev.model.Command.DISCONNECT;
-import static su.grinev.model.Command.FORWARD_PACKET;
 import static su.grinev.model.Command.PING;
 import static su.grinev.model.Command.REQUEST_LOGS;
 import static su.grinev.model.Status.OK;
@@ -70,7 +69,6 @@ import su.grinev.model.RequestDto;
 import su.grinev.model.ResponseDto;
 import su.grinev.model.Status;
 import su.grinev.model.CapabilityDto;
-import su.grinev.model.VpnForwardPacketRequestDto;
 import su.grinev.model.VpnIpResponseDto;
 import su.grinev.model.VpnLoginRequestDto;
 import su.grinev.model.FileType;
@@ -130,11 +128,6 @@ public class VpnClient {
     public volatile String assignedIp;
     public volatile byte[] assignedIpBytes;
 
-    // Pre-allocated for send hot path (single-threaded: TunHandler reader thread only)
-    private final VpnForwardPacketRequestDto sendForwardDto = new VpnForwardPacketRequestDto();
-    private final RequestDto<VpnForwardPacketRequestDto> sendRequestDto = new RequestDto<>();
-    private final Packet<RequestDto<?>> sendPacketDto = new Packet<>();
-
     // Pre-allocated for PONG response (single-threaded: VpnClientWorker thread only)
     private final ResponseDto<Void> pongResponseDto = new ResponseDto<>();
     private final Packet<ResponseDto<?>> pongPacketDto = new Packet<>();
@@ -191,6 +184,24 @@ public class VpnClient {
 
     private static final Instant FIXED_TIMESTAMP = Instant.now();
 
+    // --- Diagnostic counters (each is single-writer, so a volatile increment is safe; read by the
+    // wrapper's heartbeat thread). Added to diagnose "shows LIVE but no traffic" reports.
+    private volatile long txPackets;          // send writer thread
+    private volatile long txBytes;            // send writer thread
+    private volatile long rxPackets;          // worker thread
+    private volatile long rxBytes;            // worker thread
+    private volatile long sendQueueDrops;     // TUN reader thread
+    private volatile long connectAttempts;    // worker thread
+    private volatile long lastTxMs;           // send writer thread
+    private volatile FlowAction lastFlowSent; // lifecycle executor (serialized)
+    private volatile long lastFlowSentMs;
+    // The downlink state the app currently wants: STOP while the screen is off, START otherwise.
+    // Re-asserted on every LIVE entry so a fresh/reconnected session — or one whose screen-on START
+    // was skipped while it was mid-reconnect — converges to the intended state instead of sticking
+    // in STOP (server downlink paused on a LIVE-looking connection = "shows connected, no traffic").
+    private final FlowAckTracker flowAck = new FlowAckTracker();   // FLOW_CONTROL send/ack/timeout state (spec §11.3)
+    private static final int FLOW_ACK_TIMEOUT_MS = 5_000;   // no ack within this → link wedged, reconnect
+
     public VpnClient(
             String serverAddress,
             int serverPort,
@@ -217,12 +228,7 @@ public class VpnClient {
         this.uploadCodec = Codec.messagePack(poolFactory, UPLOAD_CODEC_BUFFER_SIZE, Binder.ClassNameMode.SIMPLE_NAME);
         this.onStateChange = onStateChange;
 
-        this.keepAliveManager = new KeepAliveManager(outputLock, codec, this::onKeepAliveFailed);
-
-        sendRequestDto.setCommand(FORWARD_PACKET);
-        sendRequestDto.setData(sendForwardDto);
-        sendPacketDto.setVer("0.1");
-        sendPacketDto.setPayload(sendRequestDto);
+        this.keepAliveManager = new KeepAliveManager(name, outputLock, codec, this::onKeepAliveFailed);
 
         pongResponseDto.setStatus(OK);
         pongPacketDto.setVer("0.1");
@@ -316,8 +322,13 @@ public class VpnClient {
     }
 
     private void setState(State newState) {
+        State oldState;
         synchronized (stateLock) {
+            oldState = state;
             state = newState;
+        }
+        if (oldState != newState) {
+            DebugLog.log("[" + name + "] state " + oldState + " -> " + newState);
         }
         onStateChange.accept(newState);
     }
@@ -390,8 +401,10 @@ public class VpnClient {
             }
 
             try {
+                connectAttempts++;
                 SSLSocketFactory factory = sslContext.getSocketFactory();
-                DebugLog.log("[" + name + "] Connecting to " + serverAddress + ":" + serverPort);
+                DebugLog.log("[" + name + "] Connecting to " + serverAddress + ":" + serverPort
+                        + " (attempt #" + connectAttempts + ")");
 
                 // Connect over the system default network (protected from our own TUN). Multisession =
                 // N such connections; the OS picks the best network (Wi-Fi/cellular) and a network change
@@ -464,6 +477,14 @@ public class VpnClient {
                 case AWAITING_HELLO_RESPONSE -> {
                     try {
                         Packet<?> packet = readPacket(Packet.class);
+                        // The server pings connections (and may send other requests) at any time — a
+                        // server-initiated RequestDto can arrive before the HELLO response. Handle it
+                        // and keep waiting; blindly casting to ResponseDto here threw ClassCastException
+                        // and killed the connection mid-handshake.
+                        if (packet.getPayload() instanceof RequestDto<?> req) {
+                            handleServerRequestWhileAwaiting(req);
+                            continue;
+                        }
                         ResponseDto<?> responseDto = (ResponseDto<?>) packet.getPayload();
                         if (responseDto.getStatus() == OK) {
                             helloAcked = true;
@@ -500,6 +521,13 @@ public class VpnClient {
                 }
                 case AWAITING_LOGIN_RESPONSE -> {
                     Packet<?> packet = readPacket(Packet.class);
+                    // Same as AWAITING_HELLO_RESPONSE: a server-initiated request (e.g. a keepalive
+                    // PING) can land here before the LOGIN response. Answer it and keep waiting instead
+                    // of casting to ResponseDto and crashing the connection.
+                    if (packet.getPayload() instanceof RequestDto<?> req) {
+                        handleServerRequestWhileAwaiting(req);
+                        continue;
+                    }
                     ResponseDto<VpnIpResponseDto> responseDto = (ResponseDto<VpnIpResponseDto>) packet.getPayload();
 
                     if (responseDto.getStatus() == OK) {
@@ -522,6 +550,11 @@ public class VpnClient {
                             break;
                         }
                         keepAliveManager.start(serverOutputStream);
+                        // Fresh session: re-assert the app's desired downlink state (its ack starts a fresh
+                        // timeout clock). Recovers a screen-on START skipped mid-reconnect and pauses
+                        // correctly if the screen went off during the reconnect.
+                        flowAck.reset();
+                        sendFlowControl(flowAck.desired());
                     } else {
                         DebugLog.log("[AUTH] Auth failed: " + responseDto.getStatus().name());
                         setError(true);
@@ -532,6 +565,18 @@ public class VpnClient {
 
                 case LIVE -> {
                     if (serverInputStream == null) {
+                        setState(DISCONNECTED);
+                        break;
+                    }
+
+                    // FLOW_CONTROL contract (spec §11.3): we requested an ack and it hasn't arrived within
+                    // the timeout — the link is wedged (downlink would sit paused, "connected but no
+                    // traffic"), so drop and reconnect. A fresh session defaults to flowing and re-asserts
+                    // desiredFlow on LIVE entry, so this self-heals instead of needing a manual restart.
+                    if (flowAck.isAckOverdue(System.currentTimeMillis(), FLOW_ACK_TIMEOUT_MS)) {
+                        DebugLog.log("[" + name + "] FLOW_CONTROL ack timeout (seq=" + flowAck.pendingSeq() + ") — reconnecting");
+                        flowAck.reset();
+                        setError(true);
                         setState(DISCONNECTED);
                         break;
                     }
@@ -554,6 +599,8 @@ public class VpnClient {
                         if (off < 0 || binLen > MAX_MTU) {
                             throw new IOException("Invalid packet length");
                         }
+                        rxPackets++;
+                        rxBytes += binLen;
                         readByteBuffer.limit(off + binLen).position(off);
                         onClientPacketHandler.accept(readByteBuffer);
                         continue;
@@ -563,9 +610,12 @@ public class VpnClient {
                     Packet<?> packet = codec.deserialize(readByteBuffer, Packet.class);
 
                     if (packet.getPayload() instanceof ResponseDto<?> responseDto) {
-                        // A ResponseDto is either our keepalive PONG or a reply to an in-flight log-upload
-                        // request — route by requestId so the upload worker gets exactly its responses.
-                        if (pendingUploadSeq != -1 && responseDto.getRequestId() == pendingUploadSeq) {
+                        // A ResponseDto is a FLOW_CONTROL ack, a reply to an in-flight log-upload request,
+                        // or our keepalive PONG (PING seq = 0) — route by requestId.
+                        int rid = responseDto.getRequestId();
+                        if (flowAck.onResponse(rid)) {
+                            // FLOW_CONTROL ack — clears the ack-timeout clock, nothing further to route
+                        } else if (pendingUploadSeq != -1 && rid == pendingUploadSeq) {
                             uploadResponses.offer(responseDto);
                         } else {
                             keepAliveManager.onPongReceived();
@@ -590,22 +640,41 @@ public class VpnClient {
                         continue;
                     }
 
-                    if (requestDto.getCommand() == FORWARD_PACKET && requestDto.getData() instanceof VpnForwardPacketRequestDto vpnForwardPacketRequestDto) {
-                        ByteBuffer buf = vpnForwardPacketRequestDto.getPacket();
-                        if (buf.remaining() > MAX_MTU) {
-                            throw new IOException("Invalid packet length");
-                        }
-                        onClientPacketHandler.accept(buf);
-                    } else if (requestDto.getCommand() == DISCONNECT) {
+                    if (requestDto.getCommand() == DISCONNECT) {
                         DebugLog.log("[LIVE] Server requested disconnect");
                         setState(DISCONNECTED);
                     }
+                    // Downlink FORWARD is v0.2-only now (extracted by the ForwardV2Codec fast path above);
+                    // the legacy v0.1 RequestDto-enveloped FORWARD_PACKET is no longer sent or handled.
                 }
 
                 default -> {
                     setState(DISCONNECTED);
                 }
             }
+        }
+    }
+
+    // Handles a server-initiated request that arrives while we're still awaiting a HELLO/LOGIN
+    // response (the server pings connections at any time). Answer PINGs so keepalive doesn't tear
+    // the connection down mid-handshake, honour DISCONNECT, and ignore anything that only makes
+    // sense once LIVE. The caller stays in its AWAITING state and keeps reading for the response.
+    private void handleServerRequestWhileAwaiting(RequestDto<?> req) throws IOException {
+        switch (req.getCommand()) {
+            case PING -> {
+                pongResponseDto.setRequestId(req.getSeq());
+                pongPacketDto.setTimestamp(FIXED_TIMESTAMP);
+                synchronized (outputLock) {
+                    if (serverOutputStream != null) {
+                        codec.serialize(pongPacketDto, serverOutputStream);
+                    }
+                }
+            }
+            case DISCONNECT -> {
+                DebugLog.log("[HANDSHAKE] Server requested disconnect while awaiting response");
+                setState(DISCONNECTED);
+            }
+            default -> DebugLog.log("[HANDSHAKE] Ignoring server " + req.getCommand() + " received before LIVE");
         }
     }
 
@@ -766,6 +835,7 @@ public class VpnClient {
             state = DISCONNECTED;
             hasError = true;
         }
+        DebugLog.log("[" + name + "] connection error -> DISCONNECTED (will retry)");
         onStateChange.accept(DISCONNECTED);
     }
 
@@ -775,6 +845,7 @@ public class VpnClient {
             hasError = true;
             state = DISCONNECTED;
         }
+        DebugLog.log("[" + name + "] keepalive declared connection dead -> DISCONNECTED (will retry)");
         onStateChange.accept(DISCONNECTED);
         closeConnection();
     }
@@ -783,6 +854,7 @@ public class VpnClient {
     // send writer (which releases it after sending) or released here if the queue is full.
     public void sendToServer(ByteBuffer packet) {
         if (!sendQueue.offer(packet)) {
+            sendQueueDrops++;
             bufferReleaser.accept(packet);   // queue full — drop (inner TCP retransmits)
         }
     }
@@ -833,6 +905,9 @@ public class VpnClient {
             out.write(sendBatchScratch, 0, pos);
             out.flush();
         }
+        txPackets += batch.size();
+        txBytes += pos;
+        lastTxMs = System.currentTimeMillis();
     }
 
     public void stop() {
@@ -859,24 +934,37 @@ public class VpnClient {
     // downlink without re-login. Fire-and-forget; only valid while LIVE. Serialized under outputLock,
     // so it is safe to call from a lifecycle thread alongside the keepalive/worker writers.
     public void sendFlowControl(FlowAction action) {
+        flowAck.setDesired(action);   // record intent even if the send below is skipped — re-asserted on LIVE entry
+        // Skips are logged: a STOP that sticks (its matching START skipped because the session was
+        // mid-reconnect / stream was gone) leaves the server downlink paused on a surviving
+        // connection — exactly the "LIVE but no traffic" shape we're diagnosing.
         if (getState() != LIVE) {
+            DebugLog.log("[" + name + "] FLOW_CONTROL " + action + " skipped (state=" + getState() + ")");
             return;
         }
         DataOutputStream out = serverOutputStream;
         if (out == null) {
+            DebugLog.log("[" + name + "] FLOW_CONTROL " + action + " skipped (no stream)");
             return;
         }
         try {
+            int seq = uploadSeq.incrementAndGet();   // shared client-request seq space (upload + flow); PING uses seq 0
             synchronized (outputLock) {
                 flowControlDto.setAction(action);
-                flowControlRequestDto.setResponseRequired(false);
+                flowControlRequestDto.setSeq(seq);
+                flowControlRequestDto.setResponseRequired(true);   // spec §11.3: server ACKs with ResponseDto{requestId=seq}
                 flowControlPacketDto.setTimestamp(FIXED_TIMESTAMP);
                 codec.serialize(flowControlPacketDto, out);
                 out.flush();
+                flowAck.onSent(seq, System.currentTimeMillis());
             }
+            lastFlowSent = action;
+            lastFlowSentMs = System.currentTimeMillis();
+            DebugLog.log("[" + name + "] FLOW_CONTROL " + action + " sent (seq=" + seq + ")");
         } catch (Throwable e) {
             // Never let a control-message hiccup propagate (it must not crash a lifecycle callback).
-            DebugLog.log("FLOW_CONTROL send failed: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            DebugLog.log("[" + name + "] FLOW_CONTROL " + action + " send failed: "
+                    + e.getClass().getSimpleName() + ": " + e.getMessage());
         }
     }
 
@@ -887,6 +975,11 @@ public class VpnClient {
     public void resumeKeepAlive() {
         if (serverOutputStream != null && getState() == LIVE) {
             keepAliveManager.start(serverOutputStream);
+        } else {
+            // Not resumable right now (mid-reconnect). If the session later reaches LIVE, login
+            // restarts the keepalive; if it never does while showing LIVE, this log is the smoking gun.
+            DebugLog.log("[" + name + "] keepalive resume skipped (state=" + getState()
+                    + ", stream=" + (serverOutputStream != null) + ")");
         }
     }
 
@@ -900,6 +993,7 @@ public class VpnClient {
         if (getState() == SHUTDOWN) {
             return;
         }
+        DebugLog.log("[" + name + "] forceReconnect (state=" + getState() + ")");
         forceReconnectRequested = true;
         backoffMs = MIN_BACKOFF_MS;
         synchronized (this) {
@@ -916,6 +1010,32 @@ public class VpnClient {
 
     public boolean isSocketConnected() {
         return socket != null && socket.isConnected() && !socket.isClosed();
+    }
+
+    /**
+     * One-line diagnostic snapshot for the wrapper's periodic heartbeat log. Designed to catch the
+     * "shows LIVE but no traffic" report: a healthy session shows ka=on and a fresh lastRx; a wedged
+     * one shows LIVE with ka=off, a stale lastRx, or a lingering flow=STOP.
+     */
+    public String diagSummary() {
+        long now = System.currentTimeMillis();
+        StringBuilder sb = new StringBuilder(160);
+        sb.append(name).append('[').append(state);
+        sb.append(" sock=").append(isSocketConnected() ? "up" : "down");
+        sb.append(" ka=").append(keepAliveManager.isRunning() ? "on" : "off");
+        sb.append(" tx=").append(txPackets).append("p/").append(txBytes >> 10).append("K");
+        sb.append(" rx=").append(rxPackets).append("p/").append(rxBytes >> 10).append("K");
+        sb.append(" qDrop=").append(sendQueueDrops);
+        sb.append(" conn#=").append(connectAttempts);
+        long sinceRx = keepAliveManager.millisSinceLastPacket();
+        sb.append(" lastRx=").append(sinceRx < 0 ? "-" : (sinceRx / 1000) + "s");
+        sb.append(" lastTx=").append(lastTxMs == 0 ? "-" : ((now - lastTxMs) / 1000) + "s");
+        FlowAction flow = lastFlowSent;
+        if (flow != null) {
+            sb.append(" flow=").append(flow).append('@').append((now - lastFlowSentMs) / 1000).append("s");
+        }
+        sb.append(']');
+        return sb.toString();
     }
 
     private void closeConnection() {

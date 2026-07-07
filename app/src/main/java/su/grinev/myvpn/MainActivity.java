@@ -49,6 +49,7 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
 
+        CrashLogger.install();
         FileLogger.init(getApplicationContext(), 7);
         initializeDependencies();
 
@@ -114,6 +115,9 @@ public class MainActivity extends AppCompatActivity {
 
 
     private void onConnectClicked(View v) {
+        // Time-anchors user toggles in the diagnostic log (correlates "I had to flip it off/on"
+        // reports with what the sessions were doing at that moment).
+        DebugLog.log("UI: connect button clicked (currentState=" + currentState + ")");
         switch (currentState) {
             case DISCONNECTED:
             case ERROR:

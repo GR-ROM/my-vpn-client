@@ -22,7 +22,7 @@ public final class ClientCapabilities {
             cap(Command.LOGIN, V0_1, V0_2),
             cap(Command.HELLO, V0_2),
             cap(Command.GET_IP, V0_1),
-            cap(Command.FORWARD_PACKET, V0_1, V0_2),
+            cap(Command.FORWARD_PACKET, V0_2),
             cap(Command.PING, V0_1),
             cap(Command.DISCONNECT, V0_1),
             cap(Command.FLOW_CONTROL, V0_2),
