@@ -119,7 +119,8 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
                     this::onClientPacketReceived, this::onIpAssigned, poolFactory,
                     state -> onSessionStateChanged(idx, state),
                     vpnService::protect, bufferPool::release,
-                    networkMonitor::isAvailable, "s" + idx));
+                    networkMonitor::isAvailable, "s" + idx,
+                    idx == 0));   // ep0: s0 is the control connection (advertises CONTROL_CONN)
         }
         networkMonitor.start();
         heartbeat.scheduleWithFixedDelay(this::logHeartbeat,
