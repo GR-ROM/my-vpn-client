@@ -53,6 +53,12 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
     private PowerManager powerManager;
     private ScreenStateReconciler screenReconciler;
     private static final long SCREEN_RECONCILE_INTERVAL_MS = 10_000L;
+    // On wake we resume a cached-LIVE connection optimistically; the resume sends FLOW_CONTROL START,
+    // which a live server acks within a second or two. If the ack is still outstanding after this
+    // window the peer died while we slept (e.g. the server restarted) — Socket.isConnected() can't
+    // tell — so we force a reconnect. Generous vs the in-loop 5s FLOW-ack timeout to avoid a false
+    // reconnect on a slow-but-alive cellular link.
+    private static final long WAKE_LIVENESS_TIMEOUT_MS = 8_000L;
     private final Handler screenReconcileHandler = new Handler(Looper.getMainLooper());
     private final Runnable screenReconcileTask = new Runnable() {
         @Override
@@ -325,6 +331,7 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
             wasConnectedBeforeSleep = false;
 
             boolean connectionAlive;
+            VpnClientWrapper wakeWrapper = null;
             synchronized (vpnLock) {
                 connectionAlive = vpnClientWrapper != null && vpnClientWrapper.isConnectionAlive();
                 DebugLog.log("onScreenOn: connectionAlive=" + connectionAlive
@@ -337,6 +344,7 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
                     // output lock). Harmless if a session was re-established meanwhile — the server's
                     // flow defaults to enabled on a fresh login and the policy re-asserts on LIVE.
                     final VpnClientWrapper w = vpnClientWrapper;
+                    wakeWrapper = w;
                     runOnExecutor(w::resumeDownlink);
                 }
             }
@@ -346,11 +354,45 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
                     trafficStats.start();
                 }
                 updateState(State.CONNECTED);
+                // isConnectionAlive() above trusts cached LIVE + Socket.isConnected(), which cannot see
+                // a peer that died while we slept (server restart is a 100% repro). Verify the resume
+                // actually got answered; if the link is silent, force a clean reconnect.
+                scheduleWakeLivenessVerify(wakeWrapper);
             } else {
                 DebugLog.log("Connection lost during suspend, reconnecting");
                 reconnect();
             }
         }
+    }
+
+    /**
+     * After an optimistic wake-resume, verify the link actually answered. A live server replies to the
+     * resume (FLOW ack / PONG) within a second or two; if no frame arrives within
+     * {@link #WAKE_LIVENESS_TIMEOUT_MS}, the connection died while we slept (classic case: the server
+     * restarted — {@code Socket.isConnected()} stays true, so {@code isConnectionAlive()} was fooled)
+     * and we force a clean reconnect. Guarded on the captured wrapper so it no-ops if the connection was
+     * already torn down/replaced meanwhile (keepalive or FLOW-ack watchdog beat us to it).
+     */
+    private void scheduleWakeLivenessVerify(final VpnClientWrapper wakeWrapper) {
+        if (wakeWrapper == null) {
+            return;
+        }
+        screenReconcileHandler.postDelayed(() -> {
+            boolean linkDead;
+            synchronized (vpnLock) {
+                // reconnect iff this is still the connection we resumed AND its FLOW_CONTROL START is
+                // still unacked (the in-loop / keepalive watchdog may have already replaced the wrapper).
+                linkDead = VpnClientWrapper.shouldReconnectOnWake(
+                        vpnClientWrapper == wakeWrapper, wakeWrapper.anyFlowAckPending());
+            }
+            if (linkDead) {
+                DebugLog.log("onScreenOn wake-verify: FLOW_CONTROL resume unacked after "
+                        + WAKE_LIVENESS_TIMEOUT_MS + "ms — link dead (server restart while asleep?), reconnecting");
+                reconnect();
+            } else {
+                DebugLog.log("onScreenOn wake-verify: FLOW_CONTROL resume acked (or already reconnected), healthy");
+            }
+        }, WAKE_LIVENESS_TIMEOUT_MS);
     }
 
     // ==================== Connection Management ====================

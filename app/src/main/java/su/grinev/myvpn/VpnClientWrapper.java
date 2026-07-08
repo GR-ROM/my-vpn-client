@@ -267,6 +267,24 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
         return vpnClients.stream().anyMatch(c -> c.getState() == State.LIVE && c.isSocketConnected());
     }
 
+    /**
+     * True if any session still has an unacked FLOW_CONTROL request. On wake the resume sends
+     * FLOW_CONTROL START (on the ep0 control connection); if the ack hasn't arrived by the wake
+     * verify, the peer died while we slept (server restart) — {@link #isConnectionAlive()} can't see
+     * that because {@code Socket.isConnected()} stays true — so we reconnect.
+     */
+    public boolean anyFlowAckPending() {
+        return vpnClients.stream().anyMatch(VpnClient::isFlowAckPending);
+    }
+
+    /**
+     * Wake verify decision: reconnect iff the connection we resumed is still the current one AND its
+     * FLOW_CONTROL resume was never acked (link dead). Pure, so it is unit-tested on the JVM.
+     */
+    static boolean shouldReconnectOnWake(boolean wrapperStillCurrent, boolean flowAckStillPending) {
+        return wrapperStillCurrent && flowAckStillPending;
+    }
+
     public void pauseKeepAlive() {
         vpnClients.forEach(VpnClient::pauseKeepAlive);
     }

@@ -1038,6 +1038,17 @@ public class VpnClient {
     }
 
     /**
+     * True while a FLOW_CONTROL request is still awaiting its ack. Unlike {@link #isSocketConnected()}
+     * (which stays true for a peer that died while we slept), an ack is a real round-trip: after the
+     * wake-resume sends FLOW_CONTROL START, a still-pending ack means the server never answered — the
+     * link is dead and the caller must reconnect. Only the ep0 control connection arms this; data
+     * connections suppress FLOW_CONTROL and so never show pending.
+     */
+    public boolean isFlowAckPending() {
+        return flowAck.hasPending();
+    }
+
+    /**
      * One-line diagnostic snapshot for the wrapper's periodic heartbeat log. Designed to catch the
      * "shows LIVE but no traffic" report: a healthy session shows ka=on and a fresh lastRx; a wedged
      * one shows LIVE with ka=off, a stale lastRx, or a lingering flow=STOP.
