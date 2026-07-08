@@ -20,6 +20,9 @@ public abstract class TunHandler {
 
     private void handleTunPackets() {
         DebugLog.log("TUN reader started");
+        long reads = 0;
+        long emptyReads = 0;
+        long lastStatusMs = System.currentTimeMillis();
         while (!stop) {
             // pool.get() stays inside the guard: a pool RuntimeException must not escape
             // and silently kill the reader thread (upload would be dead while the UI
@@ -30,9 +33,20 @@ public abstract class TunHandler {
             try {
                 buf = bufferPool.get();
                 int bytesRead = tun.readPacket(buf);
+                reads++;
                 if (bytesRead > 20) {
                     buf.flip();
                     handed = onTunPacketReceived(buf);   // true if the consumer took ownership
+                } else {
+                    emptyReads++;
+                }
+                // Reader-status trace (~30s, time-gated): tells "connected but no internet" apart —
+                // reads flat = blocked in readPacket (OS not delivering app packets to our TUN);
+                // emptyReads climbing = spinning on empty; both climbing = healthy uplink.
+                long now = System.currentTimeMillis();
+                if (now - lastStatusMs >= 30_000) {
+                    DebugLog.log("TUN reader status: reads=" + reads + " emptyReads=" + emptyReads + " lastBytes=" + bytesRead);
+                    lastStatusMs = now;
                 }
             } catch (IOException ioException) {
                 if (!stop) {

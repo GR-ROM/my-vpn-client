@@ -81,6 +81,7 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
     private volatile long tunRxPackets;        // TUN reader thread: packets handed to a session
     private volatile long tunRxBytes;
     private volatile long tunDropsNoSession;   // TUN reader thread: dropped, no LIVE session
+    private volatile long lastTunReadMs = System.currentTimeMillis();   // when the TUN reader last delivered a packet
     private final AtomicLong tunTxPackets = new AtomicLong();
     private final AtomicLong tunTxBytes = new AtomicLong();
     private final AtomicLong tunWriteErrors = new AtomicLong();
@@ -140,6 +141,9 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
             sb.append("HB net=").append(networkMonitor.isAvailable() ? "up" : "DOWN");
             sb.append(" agg=").append(lastAggregate);
             sb.append(" tunReader=").append(!super.running ? "off" : (readerThread.isAlive() ? "alive" : "DEAD"));
+            // tunIdle = seconds since the reader last delivered a packet. If this grows while agg=LIVE and
+            // the screen is on, the uplink is starved (OS not routing app traffic into our TUN / reader wedged).
+            sb.append(" tunIdle=").append((System.currentTimeMillis() - lastTunReadMs) / 1000).append("s");
             sb.append(" tunRx=").append(tunRxPackets).append("p/").append(tunRxBytes >> 10).append("K");
             sb.append(" noSessDrop=").append(tunDropsNoSession);
             sb.append(" tunTx=").append(tunTxPackets.get()).append("p/").append(tunTxBytes.get() >> 10).append("K");
@@ -288,6 +292,7 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
 
     @Override
     public boolean onTunPacketReceived(ByteBuffer packet) {
+        lastTunReadMs = System.currentTimeMillis();   // a packet came off the TUN — the uplink reader is delivering
         int idx = selectLiveSession(NetUtils.fiveTupleHash(packet));
         if (idx < 0) {
             tunDropsNoSession++;

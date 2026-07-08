@@ -952,6 +952,7 @@ public class VpnClient {
         if (serverSupportsControlConn && !controlConnection) {
             // ep0 model: only the designated control connection carries FLOW_CONTROL; data connections
             // stay silent so the server's single multisession gate can never desync across connections.
+            DebugLog.log("[" + name + "] FLOW_CONTROL " + action + " suppressed (ep0: not control conn)");
             return;
         }
         // Skips are logged: a STOP that sticks (its matching START skipped because the session was
@@ -1058,6 +1059,9 @@ public class VpnClient {
         if (flow != null) {
             sb.append(" flow=").append(flow).append('@').append((now - lastFlowSentMs) / 1000).append("s");
         }
+        // ep0 diagnostics: is this the control connection, and does the server support the model? A wedged
+        // downlink with ctrl=false ep0=true means FLOW is being suppressed here (only the control conn sends).
+        sb.append(" ctrl=").append(controlConnection).append(" ep0=").append(serverSupportsControlConn);
         sb.append(']');
         return sb.toString();
     }
