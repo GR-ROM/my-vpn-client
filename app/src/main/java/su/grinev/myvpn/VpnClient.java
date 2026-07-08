@@ -948,8 +948,13 @@ public class VpnClient {
             return;
         }
         try {
-            int seq = uploadSeq.incrementAndGet();   // shared client-request seq space (upload + flow); PING uses seq 0
+            int seq;
             synchronized (outputLock) {
+                // Assign the seq INSIDE the lock so the on-wire order matches the seq order. If seq
+                // were grabbed before the lock, two concurrent senders (a screen on/off callback vs
+                // the LIVE-entry re-assert) could flush out of seq order — landing a stale STOP after
+                // a fresh START and wedging the server's downlink gate shut ("LIVE but no traffic").
+                seq = uploadSeq.incrementAndGet();   // shared client-request seq space (upload + flow); PING uses seq 0
                 flowControlDto.setAction(action);
                 flowControlRequestDto.setSeq(seq);
                 flowControlRequestDto.setResponseRequired(true);   // spec §11.3: server ACKs with ResponseDto{requestId=seq}
