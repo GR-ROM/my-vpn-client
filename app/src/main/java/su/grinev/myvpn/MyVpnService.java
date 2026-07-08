@@ -5,6 +5,9 @@ import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.net.VpnService;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.PowerManager;
 import android.util.Log;
 
 import java.net.Socket;
@@ -41,6 +44,28 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
     private boolean isSleeping = false;
     private static volatile PoolFactory poolFactory;
     private static volatile MyVpnService instance;
+
+    // Level-triggered screen-state reconcile. onScreenOn()/onScreenOff() are edge-triggered by the
+    // ACTION_SCREEN_ON/OFF broadcasts, but Doze can delay or drop ACTION_SCREEN_ON after a long
+    // screen-off — then onScreenOn() never fires, we stay in SLEEPING, and the downlink stays
+    // FLOW_CONTROL STOP'd on the server → "connected but no internet after a long sleep". A periodic
+    // poll of the real screen state (PowerManager.isInteractive) self-heals that missed edge.
+    private PowerManager powerManager;
+    private ScreenStateReconciler screenReconciler;
+    private static final long SCREEN_RECONCILE_INTERVAL_MS = 10_000L;
+    private final Handler screenReconcileHandler = new Handler(Looper.getMainLooper());
+    private final Runnable screenReconcileTask = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                if (screenReconciler != null) {
+                    screenReconciler.tick();
+                }
+            } finally {
+                screenReconcileHandler.postDelayed(this, SCREEN_RECONCILE_INTERVAL_MS);
+            }
+        }
+    };
 
     /** Protect a socket from the VPN tunnel when the service is running; no-op when the VPN is down. */
     public static boolean protectSocket(Socket socket) {
@@ -107,6 +132,13 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
         } catch (Exception e) {
             Log.e("MyVPN", "onCreate: startForeground FAILED", e);
         }
+
+        powerManager = (PowerManager) getSystemService(POWER_SERVICE);
+        screenReconciler = new ScreenStateReconciler(
+                () -> powerManager != null && powerManager.isInteractive(),
+                () -> isSleeping,
+                this::syntheticResume);
+        screenReconcileHandler.postDelayed(screenReconcileTask, SCREEN_RECONCILE_INTERVAL_MS);
     }
 
     @Override
@@ -247,6 +279,18 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
 
     // ==================== ScreenStateCallback Implementation ====================
 
+    /**
+     * Synthesize a screen-on resume when {@link ScreenStateReconciler} detects a missed
+     * {@code ACTION_SCREEN_ON} (screen really interactive but we still think we're sleeping). Doze can
+     * delay or drop that broadcast after a long screen-off, leaving the downlink FLOW_CONTROL STOP'd on
+     * the server → "connected but no internet". Called on the main thread (the reconcile timer posts to
+     * the main looper), the same thread as the real screen broadcasts, so it never races them.
+     */
+    private void syntheticResume() {
+        DebugLog.log("reconcileScreenState: screen interactive but state=SLEEPING (missed ACTION_SCREEN_ON) -> synthesizing onScreenOn");
+        onScreenOn();
+    }
+
     @Override
     public void onScreenOff() {
         synchronized (vpnLock) {
@@ -368,6 +412,7 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
     @Override
     public void onDestroy() {
         DebugLog.log("MyVpnService.onDestroy");
+        screenReconcileHandler.removeCallbacks(screenReconcileTask);
         if (instance == this) {
             instance = null;
         }
