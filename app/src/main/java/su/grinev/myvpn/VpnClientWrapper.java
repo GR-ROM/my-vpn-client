@@ -198,9 +198,7 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
         }
         try {
             if (configure) {
-                // Prefix from the server; legacy servers send 0 → fall back to a wide /16 that keeps the
-                // gateway on-link for any pool IP.
-                int prefixLength = vpnIpResponseDto.getPrefixLength() > 0 ? vpnIpResponseDto.getPrefixLength() : 16;
+                int prefixLength = effectiveTunPrefix(vpnIpResponseDto.getPrefixLength());
                 String gateway = intToIpv4(vpnIpResponseDto.getGatewayIpAddress());
                 String dns = intToIpv4(vpnIpResponseDto.getDnsServer());
                 DebugLog.log("TUN configure: " + assignedIp + "/" + prefixLength + " gateway=" + gateway
@@ -317,6 +315,15 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
      */
     static boolean shouldReconnectOnWake(boolean wrapperStillCurrent, boolean flowAckStillPending) {
         return wrapperStillCurrent && flowAckStillPending;
+    }
+
+    /**
+     * TUN mask to use for the assigned IP. The server sends the pool prefix (e.g. 22 for a /22 pool)
+     * so the gateway (.0.1) stays on-link for any pool IP; a legacy server sends 0 → fall back to a
+     * wide /16 (keeps the gateway on-link across the whole 10.x.0.0/16 range). Pure, unit-tested.
+     */
+    static int effectiveTunPrefix(int serverPrefixLength) {
+        return serverPrefixLength > 0 ? serverPrefixLength : 16;
     }
 
     public void pauseKeepAlive() {
