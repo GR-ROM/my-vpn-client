@@ -198,8 +198,12 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
         }
         try {
             if (configure) {
+                // Prefix from the server; legacy servers send 0 → fall back to a wide /16 that keeps the
+                // gateway on-link for any pool IP.
+                int prefixLength = vpnIpResponseDto.getPrefixLength() > 0 ? vpnIpResponseDto.getPrefixLength() : 16;
                 tun.configureTun(
                         assignedIp,
+                        prefixLength,
                         intToIpv4(vpnIpResponseDto.getGatewayIpAddress()),
                         intToIpv4(vpnIpResponseDto.getDnsServer()),
                         defaultRouteViaVpn,

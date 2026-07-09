@@ -10,5 +10,5 @@ public interface Tun {
     int readPacket(ByteBuffer buf) throws IOException;
     int writePacket(ByteBuffer buf) throws IOException;
     String getDeviceName();
-    void configureTun(String ip, String gatewayIp, String dnsServer, boolean defaultRouteViaVpn, Set<String> excludedApps) throws InterruptedException, IOException;
+    void configureTun(String ip, int prefixLength, String gatewayIp, String dnsServer, boolean defaultRouteViaVpn, Set<String> excludedApps) throws InterruptedException, IOException;
 }

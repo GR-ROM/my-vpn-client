@@ -36,17 +36,17 @@ public class TunAndroid implements Tun {
     }
 
     @Override
-    public void configureTun(String ip, String gateway, String dnsServer, boolean defaultRouteViaVpn, Set<String> excludedApps) throws IOException {
+    public void configureTun(String ip, int prefixLength, String gateway, String dnsServer, boolean defaultRouteViaVpn, Set<String> excludedApps) throws IOException {
         VpnService.Builder builder;
         try {
             builder = vpnService.new Builder()
                     .setSession("MyVPN")
                     .addDisallowedApplication(vpnService.getPackageName())
-                    // /16, not /24: the server spreads virtual IPs across the whole VPN subnet (a /22
-                    // pool on 87) while the gateway stays at .0.1. A /24 mask leaves the gateway off-link
-                    // for any IP outside x.x.0.0/24 → no traffic after the tunnel comes up. /16 keeps the
-                    // gateway on-link for every IP in 10.x.0.0/16.
-                    .addAddress(ip, 16)
+                    // Mask from the server (VpnIpResponseDto.prefixLength): the server assigns IPs across
+                    // the whole VPN subnet while the gateway stays at .0.1, so the TUN must use the pool's
+                    // real prefix (e.g. /22) to keep the gateway on-link. The caller passes a /16 fallback
+                    // for legacy servers that don't send it.
+                    .addAddress(ip, prefixLength)
                     .addDnsServer(gateway);
         } catch (PackageManager.NameNotFoundException e) {
             throw new RuntimeException(e);

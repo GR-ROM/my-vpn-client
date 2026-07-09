@@ -25,4 +25,7 @@ public class VpnIpResponseDto {
     /** Server's post-auth capability contract (server @Tag(3)); read for negotiation/diagnostics. */
     @Tag(3)
     private List<CapabilityDto> capabilities;
+    /** VPN subnet prefix length for the TUN address (server @Tag(4)); 0/absent on legacy → default /16. */
+    @Tag(4)
+    private int prefixLength;
 }
