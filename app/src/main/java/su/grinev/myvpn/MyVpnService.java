@@ -498,27 +498,19 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
     @Override
     public void onTaskRemoved(Intent rootIntent) {
         DebugLog.log("App swiped away, stopping VPN service");
-        isStopping = true;
         wasConnectedBeforeSleep = false;
-
-        synchronized (vpnLock) {
-            if (vpnClientWrapper != null) {
-                vpnClientWrapper.stop();
-                vpnClientWrapper = null;
-            }
-            isConnecting = false;
-        }
 
         if (screenStateHandler != null) {
             screenStateHandler.unregister();
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            stopForeground(STOP_FOREGROUND_REMOVE);
-        } else {
-            stopForeground(true);
-        }
-        stopSelf();
+        // Tear down on the executor, NEVER inline here: onTaskRemoved runs on the MAIN thread, and
+        // wrapper.stop() closes the TLS sockets — Conscrypt's SSLSocket.close() flushes the outgoing
+        // queue on the network, which throws NetworkOnMainThreadException on the main thread and
+        // crashes the service. stopVpnSync (on the executor) performs the wrapper.stop() +
+        // stopForeground + stopSelf. Do NOT set isStopping here — stopVpnSync's guard would then
+        // early-return and skip the teardown entirely.
+        runOnExecutor(this::stopVpnSync);
         super.onTaskRemoved(rootIntent);
     }
 
