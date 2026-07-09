@@ -201,14 +201,11 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
                 // Prefix from the server; legacy servers send 0 → fall back to a wide /16 that keeps the
                 // gateway on-link for any pool IP.
                 int prefixLength = vpnIpResponseDto.getPrefixLength() > 0 ? vpnIpResponseDto.getPrefixLength() : 16;
-                tun.configureTun(
-                        assignedIp,
-                        prefixLength,
-                        intToIpv4(vpnIpResponseDto.getGatewayIpAddress()),
-                        intToIpv4(vpnIpResponseDto.getDnsServer()),
-                        defaultRouteViaVpn,
-                        excludedApps
-                );
+                String gateway = intToIpv4(vpnIpResponseDto.getGatewayIpAddress());
+                String dns = intToIpv4(vpnIpResponseDto.getDnsServer());
+                DebugLog.log("TUN configure: " + assignedIp + "/" + prefixLength + " gateway=" + gateway
+                        + " dns=" + dns + " (server prefix=" + vpnIpResponseDto.getPrefixLength() + ")");
+                tun.configureTun(assignedIp, prefixLength, gateway, dns, defaultRouteViaVpn, excludedApps);
             }
             // Re-protect sockets after the tunnel exists (idempotent; covers the just-LIVE session). On
             // Android 10, protect() before the tunnel may not persist.
