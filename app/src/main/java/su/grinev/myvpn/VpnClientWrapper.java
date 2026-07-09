@@ -64,6 +64,13 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
     // so re-establishing the interface per session / per reconnect would needlessly micro-drop traffic.
     private final Object tunLock = new Object();
     private boolean tunConfigured = false;
+    private String configuredTunIp;                 // IP the TUN interface is currently established with
+    private boolean ipReconnectRequested = false;   // guard: request the reconnect only once per IP change
+    // Asks the service for a full reconnect when the server hands us a DIFFERENT virtual IP than the TUN
+    // is on (rare: hash collision / pool change). A stale TUN IP makes the OS drop the downlink (dest =
+    // new IP != TUN IP) — "connected but no internet". We can't hot-swap the interface (the reader
+    // thread is single-use), so a fresh wrapper must re-establish it. Set once in the constructor.
+    private Runnable onReconnectRequested;
 
     // Reusable liveness snapshot for flow selection (onTunPacketReceived is single-producer: the
     // TunHandler reader thread), so there's no per-packet allocation.
@@ -95,7 +102,8 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
             boolean defaultRouteViaVpn,
             Set<String> excludedApps,
             PoolFactory poolFactory,
-            Consumer<State> onStateChange
+            Consumer<State> onStateChange,
+            Runnable onReconnectRequested
     ) throws IOException, InterruptedException {
         // Non-blocking on purpose (factory default is blocking): the pool is hit once per
         // upload packet from the TUN reader and released from the session writers — the
@@ -108,6 +116,7 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
         this.defaultRouteViaVpn = defaultRouteViaVpn;
         this.excludedApps = excludedApps;
         this.aggregateStateConsumer = onStateChange;
+        this.onReconnectRequested = onReconnectRequested;
         Arrays.fill(sessionStates, State.DISCONNECTED);
 
         VpnService vpnService = tun.getVpnService();
@@ -158,15 +167,39 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
     }
 
     private void onIpAssigned(VpnIpResponseDto vpnIpResponseDto) {
+        String assignedIp = intToIpv4(vpnIpResponseDto.getIpAddress());
         boolean configure;
+        boolean reconnect = false;
         synchronized (tunLock) {
-            configure = !tunConfigured;
-            tunConfigured = true;
+            if (!tunConfigured) {
+                configure = true;
+                configuredTunIp = assignedIp;
+                tunConfigured = true;
+            } else {
+                configure = false;
+                // The server can hand a different virtual IP than the TUN is on (rare now that the
+                // server assigns by clientId hash — only a collision / pool change). The TUN can't be
+                // re-addressed in place (single-use reader thread), so ask for a clean reconnect: the
+                // fresh wrapper re-establishes the interface with the new IP. Otherwise the OS keeps
+                // dropping the downlink and the session sits "connected but no internet".
+                if (!assignedIp.equals(configuredTunIp) && !ipReconnectRequested) {
+                    ipReconnectRequested = true;
+                    reconnect = true;
+                }
+            }
+        }
+        if (reconnect) {
+            DebugLog.log("onIpAssigned: assigned IP " + assignedIp + " != TUN IP " + configuredTunIp
+                    + " — reconnecting to re-establish the TUN");
+            if (onReconnectRequested != null) {
+                onReconnectRequested.run();
+            }
+            return;
         }
         try {
             if (configure) {
                 tun.configureTun(
-                        intToIpv4(vpnIpResponseDto.getIpAddress()),
+                        assignedIp,
                         intToIpv4(vpnIpResponseDto.getGatewayIpAddress()),
                         intToIpv4(vpnIpResponseDto.getDnsServer()),
                         defaultRouteViaVpn,

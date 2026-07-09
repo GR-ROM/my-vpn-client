@@ -218,7 +218,8 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
                     true,
                     settingsProvider.getExcludedApps(),
                     getPoolFactory(),
-                    this::onVpnStateChanged
+                    this::onVpnStateChanged,
+                    this::reconnect
             );
 
             synchronized (vpnLock) {
