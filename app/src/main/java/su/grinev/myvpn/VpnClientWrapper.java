@@ -12,6 +12,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -123,6 +124,10 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
         ConnectivityManager cm = vpnService.getSystemService(ConnectivityManager.class);
         this.networkMonitor = new DefaultNetworkMonitor(cm, this);
 
+        // One CLIENT-WIDE request-seq counter shared by every session: the request seq (spec §5.2) is a
+        // general per-request number, and the server's download gate is a single client-wide state
+        // ordered by it — so any seq'd request (FLOW_CONTROL, upload) must draw from one shared counter.
+        AtomicInteger requestSeq = new AtomicInteger(0);
         for (int i = 0; i < SESSION_COUNT; i++) {
             final int idx = i;
             vpnClients.add(new VpnClient(serverAddress, serverPort, jwt,
@@ -130,7 +135,8 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
                     state -> onSessionStateChanged(idx, state),
                     vpnService::protect, bufferPool::release,
                     networkMonitor::isAvailable, "s" + idx,
-                    idx == 0));   // ep0: s0 is the control connection (advertises CONTROL_CONN)
+                    idx == 0,   // ep0: s0 is the control connection (advertises CONTROL_CONN)
+                    requestSeq));
         }
         networkMonitor.start();
         heartbeat.scheduleWithFixedDelay(this::logHeartbeat,

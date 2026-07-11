@@ -163,10 +163,14 @@ public class VpnClient {
     private static final int UPLOAD_RESPONSE_TIMEOUT_MS = 30_000;
     private final Codec uploadCodec;
     // The read loop routes a ResponseDto whose requestId == pendingUploadSeq into uploadResponses; the
-    // worker thread drains them. uploadSeq stays >= 1 so it never collides with the keepalive PONG
-    // (PING seq = 0). Only one upload runs at a time (uploading guard).
+    // worker thread drains them. Only one upload runs at a time (uploading guard).
     private final BlockingQueue<ResponseDto<?>> uploadResponses = new ArrayBlockingQueue<>(4);
-    private final AtomicInteger uploadSeq = new AtomicInteger(0);
+    // General per-request seq (spec §5.2), CLIENT-WIDE: shared across the multisession's sessions so any
+    // seq'd request (FLOW_CONTROL, upload) is totally ordered/correlated client-wide, not per pipe — the
+    // server's download gate is one client-wide state ordered by this seq, so a per-connection seq could
+    // let a stale STOP on one pipe undo a fresh START on another. VpnClientWrapper passes one shared
+    // counter to every session. Stays >= 1 (PING/PONG use seq 0).
+    private final AtomicInteger requestSeq;
     private volatile int pendingUploadSeq = -1;
     private volatile boolean uploading = false;
 
@@ -220,8 +224,10 @@ public class VpnClient {
             Consumer<ByteBuffer> bufferReleaser,
             BooleanSupplier networkAvailable,
             String name,
-            boolean controlConnection) throws IOException, InterruptedException {
+            boolean controlConnection,
+            AtomicInteger requestSeq) throws IOException, InterruptedException {
         this.controlConnection = controlConnection;
+        this.requestSeq = requestSeq != null ? requestSeq : new AtomicInteger(0);
         this.jwt = jwt;
         this.bufferReleaser = bufferReleaser;
         this.onClientPacketHandler = onClientPacket;
@@ -791,7 +797,7 @@ public class VpnClient {
         if (out == null || getState() != LIVE) {
             return null;
         }
-        int seq = uploadSeq.incrementAndGet();
+        int seq = requestSeq.incrementAndGet();
         uploadResponses.clear();
         pendingUploadSeq = seq;
 
@@ -974,7 +980,7 @@ public class VpnClient {
                 // were grabbed before the lock, two concurrent senders (a screen on/off callback vs
                 // the LIVE-entry re-assert) could flush out of seq order — landing a stale STOP after
                 // a fresh START and wedging the server's downlink gate shut ("LIVE but no traffic").
-                seq = uploadSeq.incrementAndGet();   // shared client-request seq space (upload + flow); PING uses seq 0
+                seq = requestSeq.incrementAndGet();   // shared client-request seq space (upload + flow); PING uses seq 0
                 flowControlDto.setAction(action);
                 flowControlRequestDto.setSeq(seq);
                 flowControlRequestDto.setResponseRequired(true);   // spec §11.3: server ACKs with ResponseDto{requestId=seq}
