@@ -206,7 +206,10 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
             if (configure) {
                 int prefixLength = effectiveTunPrefix(vpnIpResponseDto.getPrefixLength());
                 String gateway = intToIpv4(vpnIpResponseDto.getGatewayIpAddress());
-                String dns = intToIpv4(vpnIpResponseDto.getDnsServer());
+                // The gateway is the node's built-in DNS forwarder, so the TUN's DNS is the gateway.
+                // (VpnIpResponseDto tag 2 is maxConnections, not a DNS address — the server sends no
+                // separate DNS server; configureTun points DNS at the gateway regardless.)
+                String dns = gateway;
                 DebugLog.log("TUN configure: " + assignedIp + "/" + prefixLength + " gateway=" + gateway
                         + " dns=" + dns + " (server prefix=" + vpnIpResponseDto.getPrefixLength() + ")");
                 tun.configureTun(assignedIp, prefixLength, gateway, dns, defaultRouteViaVpn, excludedApps);

@@ -19,8 +19,9 @@ public class VpnIpResponseDto {
     private int ipAddress;
     @Tag(1)
     private int gatewayIpAddress;
+    /** Per-client connection cap (server @Tag(2)); the multisession opens at most this many pipes. */
     @Tag(2)
-    private int dnsServer;
+    private int maxConnections;
 
     /** Server's post-auth capability contract (server @Tag(3)); read for negotiation/diagnostics. */
     @Tag(3)
