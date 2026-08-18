@@ -121,4 +121,15 @@
         libero vel nunc consequat, quis tincidunt nisl eleifend. Cras bibendum enim a justo luctus
         vestibulum. Fusce dictum libero quis erat maximus, vitae volutpat diam dignissim.
     </string>
+
+    <!-- Account / sign-in -->
+    <string name="login_subtitle">Sign in to activate your subscription and connect</string>
+    <string name="login_sign_in_with_google">Sign in with Google</string>
+    <string name="login_error_google">Google sign-in failed. Please try again.</string>
+    <string name="login_error_not_configured">This build has no Google client ID configured.</string>
+    <string name="login_error_network">No connection to the server. Check your internet.</string>
+    <string name="login_error_server">Server error. Please try again later.</string>
+    <string name="login_error_no_subscription">Your trial has ended. A subscription is required to connect.</string>
+    <string name="login_error_device_quota">Device limit reached. Remove another device to continue.</string>
+    <string name="account_session_expired">Session expired, please sign in again</string>
 </resources>

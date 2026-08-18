@@ -47,6 +47,22 @@ public class SharedPreferencesSettingsProvider implements SettingsProvider {
         return prefs.edit().putStringSet(KEY_EXCLUDED_APPS, packages).commit();
     }
 
+    /**
+     * Stores the device JWT issued by billing, so the existing connect path keeps reading the
+     * token from one place. Server IP/port stay untouched — they come from the node picker.
+     */
+    public boolean saveJwt(String jwt) {
+        return prefs.edit().putString(KEY_JWT, jwt).commit();
+    }
+
+    /** Server selected from the node catalog after login. */
+    public boolean saveServer(String serverIp, int serverPort) {
+        return prefs.edit()
+                .putString(KEY_SERVER_IP, serverIp)
+                .putInt(KEY_SERVER_PORT, serverPort)
+                .commit();
+    }
+
     public boolean saveSettings(String serverIp, int serverPort, String jwt) {
         return prefs.edit()
                 .putString(KEY_SERVER_IP, serverIp)

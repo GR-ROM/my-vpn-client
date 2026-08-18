@@ -38,6 +38,10 @@
         </activity>
 
         <activity
+            android:name=".account.LoginActivity"
+            android:exported="false"/>
+
+        <activity
             android:name=".SettingsActivity"
             android:exported="false"
             android:parentActivityName=".MainActivity"/>

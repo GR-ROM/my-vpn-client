@@ -20,11 +20,14 @@ import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.function.Consumer;
 
+import su.grinev.myvpn.account.AccountRepository;
+import su.grinev.myvpn.account.LoginActivity;
 import su.grinev.myvpn.databinding.ActivityMainBinding;
 import su.grinev.myvpn.notification.VpnNotificationManager;
-import su.grinev.myvpn.settings.SettingsProvider;
 import su.grinev.myvpn.settings.SettingsValidator;
 import su.grinev.myvpn.settings.SharedPreferencesSettingsProvider;
 import su.grinev.myvpn.state.VpnStateManager;
@@ -33,8 +36,11 @@ public class MainActivity extends AppCompatActivity {
 
     private ActivityMainBinding binding;
     private State currentState = State.DISCONNECTED;
-    private SettingsProvider settingsProvider;
+    // Concrete type: the connect path writes the refreshed JWT back through saveJwt().
+    private SharedPreferencesSettingsProvider settingsProvider;
     private SettingsValidator settingsValidator;
+    private AccountRepository accountRepository;
+    private ExecutorService accountExecutor;
     private final VpnStateManager stateManager = VpnStateManager.getInstance();
     private final Consumer<State> stateListener = this::updateUI;
     private ObjectAnimator pulseAnimator;
@@ -93,6 +99,21 @@ public class MainActivity extends AppCompatActivity {
     private void initializeDependencies() {
         settingsProvider = new SharedPreferencesSettingsProvider(this);
         settingsValidator = new SettingsValidator(this);
+        accountRepository = new AccountRepository(this);
+        accountExecutor = Executors.newSingleThreadExecutor();
+    }
+
+    /**
+     * Sends the user to sign-in unless they already have credentials. A manually configured JWT
+     * (QR / settings) still counts — that path stays open for debugging and self-hosted nodes.
+     */
+    private boolean requireAccount() {
+        if (accountRepository.getStore().isSignedIn() || !settingsProvider.getJwt().isEmpty()) {
+            return true;
+        }
+        startActivity(new Intent(this, LoginActivity.class));
+        finish();
+        return false;
     }
 
     @Override
@@ -104,6 +125,9 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        if (!requireAccount()) {
+            return;
+        }
         updateUI(stateManager.getState());
     }
 
@@ -111,6 +135,12 @@ public class MainActivity extends AppCompatActivity {
     protected void onStop() {
         stateManager.unobserveState(stateListener);
         super.onStop();
+    }
+
+    @Override
+    protected void onDestroy() {
+        accountExecutor.shutdownNow();
+        super.onDestroy();
     }
 
 
@@ -125,7 +155,7 @@ public class MainActivity extends AppCompatActivity {
                 if (prepare != null) {
                     startActivityForResult(prepare, 1);
                 } else {
-                    startVpn();
+                    startVpnWithFreshToken();
                 }
                 break;
             case CONNECTING:
@@ -142,7 +172,47 @@ public class MainActivity extends AppCompatActivity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == 1 && resultCode == RESULT_OK) {
+            startVpnWithFreshToken();
+        }
+    }
+
+    /**
+     * Refreshes the device JWT before the tunnel starts, then hands off to {@link #startVpn()}.
+     * The node rejects an expired token at LOGIN, so refreshing here is cheaper than a tunnel
+     * that comes up and dies. Accounts configured by hand (no refresh token) skip straight
+     * through — nothing to refresh.
+     */
+    private void startVpnWithFreshToken() {
+        if (!accountRepository.getStore().isSignedIn()) {
             startVpn();
+            return;
+        }
+        DebugLog.log("startVpn: refreshing device token");
+        accountExecutor.execute(() -> {
+            try {
+                String jwt = accountRepository.ensureFreshJwt();
+                settingsProvider.saveJwt(jwt);
+                runOnUiThread(this::startVpn);
+            } catch (AccountRepository.AccountException e) {
+                DebugLog.log("startVpn: token refresh failed (" + e.getKind() + "): " + e.getMessage());
+                runOnUiThread(() -> onAccountFailure(e));
+            }
+        });
+    }
+
+    private void onAccountFailure(AccountRepository.AccountException e) {
+        switch (e.getKind()) {
+            case SIGNED_OUT -> {
+                Toast.makeText(this, R.string.account_session_expired, Toast.LENGTH_LONG).show();
+                startActivity(new Intent(this, LoginActivity.class));
+                finish();
+            }
+            case NO_SUBSCRIPTION ->
+                    Toast.makeText(this, R.string.login_error_no_subscription, Toast.LENGTH_LONG).show();
+            case DEVICE_QUOTA ->
+                    Toast.makeText(this, R.string.login_error_device_quota, Toast.LENGTH_LONG).show();
+            case NETWORK -> Toast.makeText(this, R.string.login_error_network, Toast.LENGTH_LONG).show();
+            default -> Toast.makeText(this, R.string.login_error_server, Toast.LENGTH_LONG).show();
         }
     }
 

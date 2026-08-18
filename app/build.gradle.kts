@@ -38,6 +38,17 @@ android {
         versionName = appVersion
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // Account backend + the Google *Web* OAuth client id (not the Android one): it is the
+        // audience billing verifies the id_token against. Override in local.properties or CI
+        // rather than committing a real id.
+        buildConfigField("String", "BILLING_BASE_URL",
+            "\"${project.findProperty("billingBaseUrl") ?: "https://billing.grinev.su"}\"")
+        buildConfigField("String", "GOOGLE_SERVER_CLIENT_ID",
+            "\"${project.findProperty("googleServerClientId") ?: ""}\"")
+        // Google Cloud project number backing Play Integrity; 0 disables the attestation call.
+        buildConfigField("long", "INTEGRITY_CLOUD_PROJECT",
+            "${project.findProperty("integrityCloudProject") ?: 0}L")
     }
 
     signingConfigs {
@@ -83,6 +94,14 @@ dependencies {
     implementation(libs.constraintlayout)
     implementation(libs.navigation.fragment)
     implementation(libs.navigation.ui)
+    // Google Sign-In goes through Credential Manager; the legacy GoogleSignInClient is retired.
+    implementation(libs.credentials)
+    implementation(libs.credentials.play.services.auth)
+    implementation(libs.googleid)
+    // Refresh token and device JWT are bearer credentials — not for plain SharedPreferences.
+    implementation(libs.security.crypto)
+    // Attests at enroll that this is a genuine Play build on a genuine device (anti trial-farm).
+    implementation(libs.play.integrity)
     testImplementation(libs.junit)
     testImplementation("org.mockito:mockito-core:5.11.0")
     androidTestImplementation(libs.ext.junit)
