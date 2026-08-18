@@ -204,12 +204,8 @@ public class VpnClient {
     // was skipped while it was mid-reconnect — converges to the intended state instead of sticking
     // in STOP (server downlink paused on a LIVE-looking connection = "shows connected, no traffic").
     private final FlowAckTracker flowAck = new FlowAckTracker();   // FLOW_CONTROL send/ack/timeout state (spec §11.3)
-    // ep0 control model: true on the ONE connection this client designates as its control channel (it
-    // advertises CONTROL_CONN in HELLO). serverSupportsControlConn is learned from the login response —
-    // when the server supports the model, only the control connection sends FLOW_CONTROL, so the
-    // per-connection gate can never desync. Old server → flag stays false → legacy FLOW-on-every-conn.
-    private final boolean controlConnection;
-    private volatile boolean serverSupportsControlConn;
+    // FLOW_CONTROL goes out on every connection: the server's download gate is one client-wide state
+    // ordered by the shared request seq, so there is no designated control connection.
     private static final int FLOW_ACK_TIMEOUT_MS = 5_000;   // no ack within this → link wedged, reconnect
 
     public VpnClient(
@@ -224,9 +220,7 @@ public class VpnClient {
             Consumer<ByteBuffer> bufferReleaser,
             BooleanSupplier networkAvailable,
             String name,
-            boolean controlConnection,
             AtomicInteger requestSeq) throws IOException, InterruptedException {
-        this.controlConnection = controlConnection;
         this.requestSeq = requestSeq != null ? requestSeq : new AtomicInteger(0);
         this.jwt = jwt;
         this.bufferReleaser = bufferReleaser;
@@ -259,7 +253,7 @@ public class VpnClient {
         // Send the FULL capability contract in HELLO — the server reads HELLO caps to build the
         // session contract (and replies with only LOGIN versions for anti-fingerprint). LOGIN itself
         // carries no caps.
-        helloDto.setCapabilities(controlConnection ? ClientCapabilities.fullWithControl() : ClientCapabilities.full());
+        helloDto.setCapabilities(ClientCapabilities.full());
         helloRequestDto.setCommand(Command.HELLO);
         helloRequestDto.setResponseRequired(true);
         helloRequestDto.setData(helloDto);
@@ -553,12 +547,6 @@ public class VpnClient {
                             break;
                         }
                         DebugLog.log("[CAPS] server caps: " + describeCaps(ipResponse.getCapabilities()));
-                        // ep0: does the server honor a client-designated control connection? Learned here
-                        // (before LIVE + the flow re-assert) so sendFlowControl gates correctly from the start.
-                        serverSupportsControlConn = ClientCapabilities.parse(ipResponse.getCapabilities()).containsKey(Command.CONTROL_CONN);
-                        if (serverSupportsControlConn && controlConnection) {
-                            DebugLog.log("[" + name + "] ep0: this is the CONTROL connection");
-                        }
                         assignedIp = intToIpv4(ipResponse.getIpAddress());
                         assignedIpBytes = ipv4ToIntBytes(assignedIp);
 
@@ -955,12 +943,6 @@ public class VpnClient {
     // so it is safe to call from a lifecycle thread alongside the keepalive/worker writers.
     public void sendFlowControl(FlowAction action) {
         flowAck.setDesired(action);   // record intent even if the send below is skipped — re-asserted on LIVE entry
-        if (serverSupportsControlConn && !controlConnection) {
-            // ep0 model: only the designated control connection carries FLOW_CONTROL; data connections
-            // stay silent so the server's single multisession gate can never desync across connections.
-            DebugLog.log("[" + name + "] FLOW_CONTROL " + action + " suppressed (ep0: not control conn)");
-            return;
-        }
         // Skips are logged: a STOP that sticks (its matching START skipped because the session was
         // mid-reconnect / stream was gone) leaves the server downlink paused on a surviving
         // connection — exactly the "LIVE but no traffic" shape we're diagnosing.
@@ -1047,8 +1029,8 @@ public class VpnClient {
      * True while a FLOW_CONTROL request is still awaiting its ack. Unlike {@link #isSocketConnected()}
      * (which stays true for a peer that died while we slept), an ack is a real round-trip: after the
      * wake-resume sends FLOW_CONTROL START, a still-pending ack means the server never answered — the
-     * link is dead and the caller must reconnect. Only the ep0 control connection arms this; data
-     * connections suppress FLOW_CONTROL and so never show pending.
+     * link is dead and the caller must reconnect. Every LIVE connection sends FLOW_CONTROL, so every
+     * one of them arms this.
      */
     public boolean isFlowAckPending() {
         return flowAck.hasPending();
@@ -1076,9 +1058,6 @@ public class VpnClient {
         if (flow != null) {
             sb.append(" flow=").append(flow).append('@').append((now - lastFlowSentMs) / 1000).append("s");
         }
-        // ep0 diagnostics: is this the control connection, and does the server support the model? A wedged
-        // downlink with ctrl=false ep0=true means FLOW is being suppressed here (only the control conn sends).
-        sb.append(" ctrl=").append(controlConnection).append(" ep0=").append(serverSupportsControlConn);
         sb.append(']');
         return sb.toString();
     }

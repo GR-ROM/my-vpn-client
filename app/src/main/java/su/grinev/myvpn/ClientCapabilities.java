@@ -3,7 +3,6 @@ package su.grinev.myvpn;
 import su.grinev.model.CapabilityDto;
 import su.grinev.model.Command;
 
-import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -30,16 +29,6 @@ public final class ClientCapabilities {
             cap(Command.REQUEST_LOGS, V0_1)
     );
 
-    // Full contract PLUS the CONTROL_CONN marker — advertised by the single connection this client
-    // designates as its control channel (ep0 model). A server that supports it makes that connection
-    // the sole FLOW_CONTROL channel; an older server ignores the unknown capability.
-    private static final List<CapabilityDto> FULL_WITH_CONTROL;
-    static {
-        ArrayList<CapabilityDto> l = new ArrayList<>(FULL);
-        l.add(cap(Command.CONTROL_CONN, V0_2));
-        FULL_WITH_CONTROL = List.copyOf(l);
-    }
-
     private static final List<CapabilityDto> HELLO_PRE_AUTH = List.of(
             cap(Command.LOGIN, V0_1, V0_2)
     );
@@ -49,11 +38,6 @@ public final class ClientCapabilities {
 
     public static List<CapabilityDto> full() {
         return FULL;
-    }
-
-    /** Full contract plus CONTROL_CONN — sent in HELLO by the connection chosen as the control channel. */
-    public static List<CapabilityDto> fullWithControl() {
-        return FULL_WITH_CONTROL;
     }
 
     public static List<CapabilityDto> helloPreAuth() {

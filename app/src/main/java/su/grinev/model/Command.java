@@ -15,9 +15,7 @@ public enum Command {
     PONG(1070),
     HELLO(1080),
     FLOW_CONTROL(1100),
-    // Capability marker advertised (in HELLO caps) on the one connection this client uses as its
-    // control channel (ep0 model). Not a dispatched command.
-    CONTROL_CONN(1110),
+    // 1110 is retired (ep0 CONTROL_CONN marker, dropped from the server contract in 0.7.0) — do not reuse.
     INIT_FILE_UPLOAD(1200),
     UPLOAD_FILE_CHUNK(1300),
     FINALIZE_FILE_UPLOAD(1400),
@@ -46,7 +44,6 @@ public enum Command {
                 Map.entry(PONG.value, PONG),
                 Map.entry(HELLO.value, HELLO),
                 Map.entry(FLOW_CONTROL.value, FLOW_CONTROL),
-                Map.entry(CONTROL_CONN.value, CONTROL_CONN),
                 Map.entry(INIT_FILE_UPLOAD.value, INIT_FILE_UPLOAD),
                 Map.entry(UPLOAD_FILE_CHUNK.value, UPLOAD_FILE_CHUNK),
                 Map.entry(FINALIZE_FILE_UPLOAD.value, FINALIZE_FILE_UPLOAD),

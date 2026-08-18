@@ -135,7 +135,6 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
                     state -> onSessionStateChanged(idx, state),
                     vpnService::protect, bufferPool::release,
                     networkMonitor::isAvailable, "s" + idx,
-                    idx == 0,   // ep0: s0 is the control connection (advertises CONTROL_CONN)
                     requestSeq));
         }
         networkMonitor.start();
@@ -310,7 +309,7 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
 
     /**
      * True if any session still has an unacked FLOW_CONTROL request. On wake the resume sends
-     * FLOW_CONTROL START (on the ep0 control connection); if the ack hasn't arrived by the wake
+     * FLOW_CONTROL START on every LIVE session; if an ack hasn't arrived by the wake
      * verify, the peer died while we slept (server restart) — {@link #isConnectionAlive()} can't see
      * that because {@code Socket.isConnected()} stays true — so we reconnect.
      */
