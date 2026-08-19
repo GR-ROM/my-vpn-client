@@ -20,13 +20,14 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 import su.grinev.model.FlowAction;
+import su.grinev.model.JwtRole;
 import su.grinev.model.VpnIpResponseDto;
 import su.grinev.myvpn.traffic.TrafficStatsManager;
 import su.grinev.pool.FastPool;
 import su.grinev.pool.PoolFactory;
 
 /**
- * Multisession front-end: opens {@link #SESSION_COUNT} parallel TLS connections to the server over the
+ * Multisession front-end: opens as many parallel TLS connections to the server over the
  * system default network and spreads upload flows across them by 5-tuple hash (flow affinity). Several
  * connections reduce head-of-line blocking — a stall/retransmit on one TCP/TLS connection only delays
  * its own flows, not all traffic.
@@ -37,8 +38,12 @@ import su.grinev.pool.PoolFactory;
  */
 public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonitor.Listener {
 
-    /** Number of parallel connections in the multisession (HoL reduction). */
-    private static final int SESSION_COUNT = 2;
+    /**
+     * Parallel connections in the multisession (HoL reduction), taken from the role in the token:
+     * the server caps by that same role and refuses the surplus, so opening more only produces a
+     * login-reject/reconnect loop. Not a user setting — the entitlement is the number.
+     */
+    private final int sessionCount;
 
     private final Tun tun;
     // CopyOnWriteArrayList: each VpnClient starts connecting from its own constructor, so a fast
@@ -52,7 +57,7 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
     private final DefaultNetworkMonitor networkMonitor;
 
     private final Object stateLock = new Object();
-    private final State[] sessionStates = new State[SESSION_COUNT];
+    private final State[] sessionStates;
 
     // Set (before anything else) by stop(): once the service tears this wrapper down, its session
     // callbacks must no longer reach the service. Without this, stop()'s own setState(SHUTDOWN) on
@@ -75,7 +80,7 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
 
     // Reusable liveness snapshot for flow selection (onTunPacketReceived is single-producer: the
     // TunHandler reader thread), so there's no per-packet allocation.
-    private final boolean[] liveScratch = new boolean[SESSION_COUNT];
+    private final boolean[] liveScratch;
 
     // --- Diagnostics: periodic heartbeat + data-plane counters, added to diagnose "shows LIVE but
     // no traffic" reports. TUN-reader-side counters are single-writer volatiles; TUN-write-side ones
@@ -118,6 +123,11 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
         this.excludedApps = excludedApps;
         this.aggregateStateConsumer = onStateChange;
         this.onReconnectRequested = onReconnectRequested;
+        JwtRole role = JwtRole.fromToken(jwt);
+        this.sessionCount = role.sessions();
+        this.sessionStates = new State[sessionCount];
+        this.liveScratch = new boolean[sessionCount];
+        DebugLog.log("Multisession: " + sessionCount + " sessions (role " + role + ")");
         Arrays.fill(sessionStates, State.DISCONNECTED);
 
         VpnService vpnService = tun.getVpnService();
@@ -128,7 +138,7 @@ public class VpnClientWrapper extends TunHandler implements DefaultNetworkMonito
         // general per-request number, and the server's download gate is a single client-wide state
         // ordered by it — so any seq'd request (FLOW_CONTROL, upload) must draw from one shared counter.
         AtomicInteger requestSeq = new AtomicInteger(0);
-        for (int i = 0; i < SESSION_COUNT; i++) {
+        for (int i = 0; i < sessionCount; i++) {
             final int idx = i;
             vpnClients.add(new VpnClient(serverAddress, serverPort, jwt,
                     this::onClientPacketReceived, this::onIpAssigned, poolFactory,
