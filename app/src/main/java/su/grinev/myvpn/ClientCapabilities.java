@@ -9,9 +9,12 @@ import java.util.Map;
 
 /**
  * Protocol 0.2 capability contract advertised by this Android client (server spec §18).
- * {@link #helloPreAuth()} is sent in the pre-auth HELLO (supported LOGIN versions only);
- * {@link #full()} is sent with the LOGIN once HELLO is acknowledged. {@link #parse} and
- * {@link #maxCommonVersion} negotiate the wire format of a command against the server's contract.
+ *
+ * <p>{@link #full()} — the whole contract — is what goes out in the pre-auth HELLO; the LOGIN body
+ * carries no capabilities (that field is legacy and the server ignores it). The server answers
+ * HELLO with its LOGIN versions only and returns its full contract post-auth in the login response,
+ * which {@link #parse} turns into a contract map and {@link #maxCommonVersion} queries to pick a
+ * command's wire version.
  */
 public final class ClientCapabilities {
 
@@ -29,19 +32,11 @@ public final class ClientCapabilities {
             cap(Command.REQUEST_LOGS, V0_1)
     );
 
-    private static final List<CapabilityDto> HELLO_PRE_AUTH = List.of(
-            cap(Command.LOGIN, V0_1, V0_2)
-    );
-
     private ClientCapabilities() {
     }
 
     public static List<CapabilityDto> full() {
         return FULL;
-    }
-
-    public static List<CapabilityDto> helloPreAuth() {
-        return HELLO_PRE_AUTH;
     }
 
     public static List<CapabilityDto.Version> versionsOf(Command command) {

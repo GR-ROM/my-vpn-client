@@ -14,6 +14,7 @@ public enum Command {
     PING(1060),
     PONG(1070),
     HELLO(1080),
+    NOP(1090),
     FLOW_CONTROL(1100),
     // 1110 is retired (ep0 CONTROL_CONN marker, dropped from the server contract in 0.7.0) — do not reuse.
     INIT_FILE_UPLOAD(1200),
@@ -43,6 +44,7 @@ public enum Command {
                 Map.entry(PING.value, PING),
                 Map.entry(PONG.value, PONG),
                 Map.entry(HELLO.value, HELLO),
+                Map.entry(NOP.value, NOP),
                 Map.entry(FLOW_CONTROL.value, FLOW_CONTROL),
                 Map.entry(INIT_FILE_UPLOAD.value, INIT_FILE_UPLOAD),
                 Map.entry(UPLOAD_FILE_CHUNK.value, UPLOAD_FILE_CHUNK),

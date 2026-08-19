@@ -38,6 +38,7 @@ import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
@@ -82,7 +83,10 @@ import su.grinev.pool.PoolFactory;
 
 public class VpnClient {
     public static final int BUFFER_SIZE = 2048;
-    private static final int MAX_PACKET_SIZE = 65536;
+    // The wire limit from spec §3: a frame is 0 < length <= 16384 (the node's PACKET_MAX_SIZE), and
+    // the node closes the connection on anything outside it. Accepting more than the protocol allows
+    // only means honouring a bogus length prefix with a matching allocation.
+    private static final int MAX_PACKET_SIZE = 16 * 1024;
     // Progressive reconnect backoff (server-unreachable case): start short — 200ms — so the first retry
     // right after a network-available event (the route may not be fully up yet → a transient
     // ENETUNREACH) recovers near-instantly; double up to a 60s cap. Reset on a successful connect or a
@@ -131,6 +135,8 @@ public class VpnClient {
     // Pre-allocated for PONG response (single-threaded: VpnClientWorker thread only)
     private final ResponseDto<Void> pongResponseDto = new ResponseDto<>();
     private final Packet<ResponseDto<?>> pongPacketDto = new Packet<>();
+    private final ResponseDto<Void> unsupportedResponseDto = new ResponseDto<>();
+    private final Packet<ResponseDto<?>> unsupportedPacketDto = new Packet<>();
 
     // Pre-allocated for LOGIN (single-threaded: VpnClientWorker thread only)
     private final VpnLoginRequestDto loginDto = new VpnLoginRequestDto();
@@ -203,7 +209,9 @@ public class VpnClient {
     // Re-asserted on every LIVE entry so a fresh/reconnected session — or one whose screen-on START
     // was skipped while it was mid-reconnect — converges to the intended state instead of sticking
     // in STOP (server downlink paused on a LIVE-looking connection = "shows connected, no traffic").
-    private final FlowAckTracker flowAck = new FlowAckTracker();   // FLOW_CONTROL send/ack/timeout state (spec §11.3)
+    private final FlowAckTracker flowAck = new FlowAckTracker();
+    // Server contract from the login response (spec §18.4), consulted for a command's wire version.
+    private volatile Map<Command, List<CapabilityDto.Version>> serverContract = Map.of();   // FLOW_CONTROL send/ack/timeout state (spec §11.3)
     // FLOW_CONTROL goes out on every connection: the server's download gate is one client-wide state
     // ordered by the shared request seq, so there is no designated control connection.
     private static final int FLOW_ACK_TIMEOUT_MS = 5_000;   // no ack within this → link wedged, reconnect
@@ -241,6 +249,10 @@ public class VpnClient {
         pongResponseDto.setStatus(OK);
         pongPacketDto.setVer("0.1");
         pongPacketDto.setPayload(pongResponseDto);
+
+        unsupportedResponseDto.setStatus(Status.UNSUPPORTED);
+        unsupportedPacketDto.setVer("0.1");
+        unsupportedPacketDto.setPayload(unsupportedResponseDto);
 
         loginRequestDto.setCommand(Command.LOGIN);
         loginRequestDto.setData(loginDto);
@@ -547,6 +559,16 @@ public class VpnClient {
                             break;
                         }
                         DebugLog.log("[CAPS] server caps: " + describeCaps(ipResponse.getCapabilities()));
+                        // Spec §18.3: the FORWARD frame version is the max common one, not an
+                        // assumption. Today both sides only have 0.2, so this cannot change what we
+                        // send — it turns a node that stopped advertising it into a log line instead
+                        // of a silent one-way tunnel.
+                        serverContract = ClientCapabilities.parse(ipResponse.getCapabilities());
+                        CapabilityDto.Version fwd =
+                                ClientCapabilities.maxCommonVersion(Command.FORWARD_PACKET, serverContract);
+                        DebugLog.log(fwd == null
+                                ? "[CAPS] no common FORWARD_PACKET version — sending v0.2 anyway"
+                                : "[CAPS] FORWARD_PACKET version negotiated: " + fwd.major() + "." + fwd.minor());
                         assignedIp = intToIpv4(ipResponse.getIpAddress());
                         assignedIpBytes = ipv4ToIntBytes(assignedIp);
 
@@ -651,6 +673,8 @@ public class VpnClient {
                     if (requestDto.getCommand() == DISCONNECT) {
                         DebugLog.log("[LIVE] Server requested disconnect");
                         setState(DISCONNECTED);
+                    } else if (requestDto.isResponseRequired()) {
+                        sendUnsupported(requestDto);
                     }
                     // Downlink FORWARD is v0.2-only now (extracted by the ForwardV2Codec fast path above);
                     // the legacy v0.1 RequestDto-enveloped FORWARD_PACKET is no longer sent or handled.
@@ -682,7 +706,30 @@ public class VpnClient {
                 DebugLog.log("[HANDSHAKE] Server requested disconnect while awaiting response");
                 setState(DISCONNECTED);
             }
-            default -> DebugLog.log("[HANDSHAKE] Ignoring server " + req.getCommand() + " received before LIVE");
+            default -> {
+                if (req.isResponseRequired()) {
+                    sendUnsupported(req);
+                } else {
+                    DebugLog.log("[HANDSHAKE] Ignoring server " + req.getCommand() + " received before LIVE");
+                }
+            }
+        }
+    }
+
+    /**
+     * Answers a server request this client does not implement (spec §18.3 safety net).
+     *
+     * <p>Silence is not the same thing: the server counts the reply it asked for, and an unanswered
+     * request times out and takes the live connection down with it.
+     */
+    private void sendUnsupported(RequestDto<?> req) throws IOException {
+        DebugLog.log("Replying UNSUPPORTED to " + req.getCommand() + " (seq=" + req.getSeq() + ")");
+        unsupportedResponseDto.setRequestId(req.getSeq());
+        unsupportedPacketDto.setTimestamp(FIXED_TIMESTAMP);
+        synchronized (outputLock) {
+            if (serverOutputStream != null) {
+                codec.serialize(unsupportedPacketDto, serverOutputStream);
+            }
         }
     }
 
