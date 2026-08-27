@@ -132,4 +132,11 @@
     <string name="login_error_no_subscription">Your trial has ended. A subscription is required to connect.</string>
     <string name="login_error_device_quota">Device limit reached. Remove another device to continue.</string>
     <string name="account_session_expired">Session expired, please sign in again</string>
+
+    <string name="settings_keep_tunnel_asleep">Keep the tunnel up while asleep</string>
+    <string name="settings_keep_tunnel_asleep_hint">The connection is not dropped when the screen goes off, so downloads, calls and messengers survive the sleep. Costs battery. Off: the tunnel is parked on screen-off and open sessions are dropped.</string>
+    <string name="settings_battery_optimization_title">Turn off battery optimization</string>
+    <string name="settings_battery_optimization_message">Android puts the app to sleep in Doze and the tunnel drops anyway. Allow MyVPN to run unrestricted?</string>
+    <string name="settings_battery_optimization_open">Open settings</string>
+    <string name="settings_battery_optimization_later">Later</string>
 </resources>

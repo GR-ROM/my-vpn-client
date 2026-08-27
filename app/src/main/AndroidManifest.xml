@@ -10,6 +10,13 @@
         android:minSdkVersion="34" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"
         android:minSdkVersion="33" />
+    <!-- "Keep the tunnel up while the phone sleeps": a partial wake lock keeps the keepalive and the
+         read loops running with the screen off, so the server's PING is answered inside its 30s
+         request timeout instead of the connection being evicted. Held only while that setting is on
+         and the screen is off; Doze ignores wake locks, which is why the setting also asks to be
+         exempted from battery optimization. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <queries>
         <intent>

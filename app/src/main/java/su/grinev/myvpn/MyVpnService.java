@@ -37,7 +37,10 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
     private TrafficStatsManager trafficStats;
     private final Object vpnLock = new Object();
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
-    private VpnClientWrapper vpnClientWrapper;
+    // volatile: the wake-lock reconcile reads it from the main looper without taking vpnLock — that
+    // lock is held across a teardown (VpnClient.stop joins its worker) and blocking the main thread
+    // behind it is an ANR. Every mutation still happens under vpnLock.
+    private volatile VpnClientWrapper vpnClientWrapper;
     private volatile boolean isConnecting = false;
     private volatile boolean isStopping = false;
     private boolean wasConnectedBeforeSleep = false;
@@ -59,6 +62,11 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
     // tell — so we force a reconnect. Generous vs the in-loop 5s FLOW-ack timeout to avoid a false
     // reconnect on a slow-but-alive cellular link.
     private static final long WAKE_LIVENESS_TIMEOUT_MS = 8_000L;
+    // Held while "keep the tunnel while asleep" is on and the screen is off: with the CPU allowed to
+    // sleep, the keepalive tick and the read loops slip past the node's 30s request timeout and the
+    // connection is evicted — the drop this mode exists to prevent. Not reference counted, and
+    // reconciled level-triggered (see reconcileWakeLock) so a missed ACTION_SCREEN_OFF cannot leak it.
+    private volatile PowerManager.WakeLock tunnelWakeLock;
     private final Handler screenReconcileHandler = new Handler(Looper.getMainLooper());
     private final Runnable screenReconcileTask = new Runnable() {
         @Override
@@ -67,6 +75,7 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
                 if (screenReconciler != null) {
                     screenReconciler.tick();
                 }
+                reconcileWakeLock();
             } finally {
                 screenReconcileHandler.postDelayed(this, SCREEN_RECONCILE_INTERVAL_MS);
             }
@@ -300,11 +309,12 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
 
     @Override
     public void onScreenOff() {
+        boolean keepTunnel = isKeepTunnelWhileAsleep();
         synchronized (vpnLock) {
             boolean alive = vpnClientWrapper != null && vpnClientWrapper.isConnectionAlive();
-            DebugLog.log("onScreenOff: connectionAlive=" + alive
-                    + (alive ? " -> suspending downlink + keepalive" : " -> nothing to suspend"));
-            if (alive) {
+            if (SleepPolicy.shouldParkTunnel(keepTunnel, alive)) {
+                DebugLog.log("onScreenOff: connectionAlive=true, keepTunnelWhileAsleep=false"
+                        + " -> suspending downlink + keepalive");
                 wasConnectedBeforeSleep = true;
                 isSleeping = true;
                 // Pause the whole server→client downlink while the screen is off (FLOW_CONTROL STOP on
@@ -319,13 +329,21 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
                     trafficStats.stop();
                 }
                 updateState(State.SLEEPING);
+            } else {
+                // Keep-the-tunnel mode (or nothing to park): no FLOW_CONTROL STOP, keepalive keeps
+                // ticking, state stays CONNECTED. isSleeping stays false, so neither the screen-state
+                // reconciler nor the wake-liveness verify has anything to heal on the way back.
+                DebugLog.log("onScreenOff: connectionAlive=" + alive + ", keepTunnelWhileAsleep=" + keepTunnel
+                        + (alive ? " -> tunnel stays up (keepalive keeps running)" : " -> nothing to suspend"));
             }
         }
+        reconcileWakeLock();
     }
 
     @Override
     public void onScreenOn() {
         isSleeping = false;
+        reconcileWakeLock();   // screen is interactive again — the tunnel no longer needs the CPU held
         DebugLog.log("onScreenOn: wasConnectedBeforeSleep=" + wasConnectedBeforeSleep);
 
         if (wasConnectedBeforeSleep) {
@@ -396,6 +414,61 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
         }, WAKE_LIVENESS_TIMEOUT_MS);
     }
 
+    // ==================== Sleep policy / wake lock ====================
+
+    /** Current sleep policy; read live so flipping the switch applies at the next screen-off, no reconnect. */
+    private boolean isKeepTunnelWhileAsleep() {
+        SettingsProvider provider = settingsProvider;
+        return provider == null
+                ? SharedPreferencesSettingsProvider.DEFAULT_KEEP_TUNNEL_WHILE_ASLEEP
+                : provider.isKeepTunnelWhileAsleep();
+    }
+
+    /**
+     * Level-triggered wake-lock reconcile: hold the CPU exactly while we are keeping a live tunnel
+     * through a screen-off, release it otherwise. Level-triggered rather than acquire-on-screen-off /
+     * release-on-screen-on because those broadcasts are the same edges Doze already drops (which is what
+     * ScreenStateReconciler exists for) — a missed edge here would leak the lock and drain the battery,
+     * or drop it and let the connection be evicted mid-sleep. The 10s reconcile tick corrects both.
+     *
+     * <p>Reads the wrapper without vpnLock: this runs on the main looper and that lock is held across a
+     * teardown that joins worker threads.
+     */
+    private void reconcileWakeLock() {
+        VpnClientWrapper wrapper = vpnClientWrapper;
+        boolean screenInteractive = powerManager == null || powerManager.isInteractive();
+        boolean alive = wrapper != null && wrapper.isConnectionAlive();
+        if (SleepPolicy.shouldHoldWakeLock(isKeepTunnelWhileAsleep(), screenInteractive, alive)) {
+            acquireTunnelWakeLock();
+        } else {
+            releaseTunnelWakeLock();
+        }
+    }
+
+    // synchronized: acquire runs on the main looper (screen edges, reconcile tick) while the release
+    // paths run on the service executor (stopVpnSync). With reference counting off, releasing a lock
+    // that is not held throws, so the check and the call must not interleave.
+    private synchronized void acquireTunnelWakeLock() {
+        if (powerManager == null) {
+            return;
+        }
+        if (tunnelWakeLock == null) {
+            tunnelWakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MyVPN:tunnel");
+            tunnelWakeLock.setReferenceCounted(false);
+        }
+        if (!tunnelWakeLock.isHeld()) {
+            tunnelWakeLock.acquire();
+            DebugLog.log("wake lock acquired — holding the tunnel through the screen-off");
+        }
+    }
+
+    private synchronized void releaseTunnelWakeLock() {
+        if (tunnelWakeLock != null && tunnelWakeLock.isHeld()) {
+            tunnelWakeLock.release();
+            DebugLog.log("wake lock released");
+        }
+    }
+
     // ==================== Connection Management ====================
 
     private void reconnect() {
@@ -419,6 +492,7 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
         if (isStopping) return;
         isStopping = true;
         DebugLog.log("stopVpnSync: stopping VPN service");
+        releaseTunnelWakeLock();
 
         synchronized (vpnLock) {
             if (vpnClientWrapper != null) {
@@ -456,6 +530,7 @@ public class MyVpnService extends VpnService implements ScreenStateHandler.Scree
     public void onDestroy() {
         DebugLog.log("MyVpnService.onDestroy");
         screenReconcileHandler.removeCallbacks(screenReconcileTask);
+        releaseTunnelWakeLock();
         if (instance == this) {
             instance = null;
         }

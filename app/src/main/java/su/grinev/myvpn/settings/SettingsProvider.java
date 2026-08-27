@@ -11,4 +11,7 @@ public interface SettingsProvider {
     int getServerPort();
     String getJwt();
     Set<String> getExcludedApps();
+
+    /** True = hold the tunnel open while the phone sleeps; false = park it on screen-off (saves battery). */
+    boolean isKeepTunnelWhileAsleep();
 }

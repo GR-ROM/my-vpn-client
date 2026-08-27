@@ -98,6 +98,22 @@
             style="@style/Widget.MaterialComponents.Button.OutlinedButton"
             android:text="@string/settings_excluded_apps"/>
 
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/keepTunnelAsleepSwitch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="@string/settings_keep_tunnel_asleep"/>
+
+        <TextView
+            android:id="@+id/keepTunnelAsleepHint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/settings_keep_tunnel_asleep_hint"
+            android:textSize="13sp"
+            android:textColor="?android:attr/textColorSecondary" />
+
         <Button
             android:id="@+id/saveButton"
             android:layout_width="match_parent"

@@ -79,4 +79,11 @@
     <string name="validation_port_invalid">Неверный номер порта</string>
     <string name="validation_jwt_empty">JWT токен не настроен</string>
     <string name="validation_jwt_invalid">Неверный формат JWT токена</string>
+
+    <string name="settings_keep_tunnel_asleep">Держать туннель во сне</string>
+    <string name="settings_keep_tunnel_asleep_hint">Соединение не рвётся при выключении экрана — загрузки, звонки и мессенджеры переживают сон. Расходует батарею. Выключено: туннель усыпляется, открытые сессии рвутся.</string>
+    <string name="settings_battery_optimization_title">Отключить оптимизацию батареи</string>
+    <string name="settings_battery_optimization_message">В режиме Doze Android всё равно усыпит приложение и туннель оборвётся. Разрешить MyVPN работать без ограничений?</string>
+    <string name="settings_battery_optimization_open">Открыть настройки</string>
+    <string name="settings_battery_optimization_later">Позже</string>
 </resources>

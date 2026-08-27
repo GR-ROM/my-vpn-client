@@ -1,14 +1,20 @@
 package su.grinev.myvpn;
 
+import android.annotation.SuppressLint;
+import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
+import android.net.Uri;
 import android.os.Bundle;
+import android.os.PowerManager;
+import android.provider.Settings;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.widget.Toast;
 
 import androidx.activity.result.ActivityResultLauncher;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.view.WindowCompat;
 
@@ -73,6 +79,11 @@ public class SettingsActivity extends AppCompatActivity {
         loadSettings();
 
         binding.saveButton.setOnClickListener(v -> saveSettings());
+        binding.keepTunnelAsleepSwitch.setOnCheckedChangeListener((v, checked) -> {
+            if (checked) {
+                promptBatteryOptimizationIfNeeded();
+            }
+        });
         binding.excludedAppsButton.setOnClickListener(v ->
                 startActivity(new Intent(this, ExcludedAppsActivity.class)));
         binding.scanQrButton.setOnClickListener(v -> {
@@ -89,6 +100,7 @@ public class SettingsActivity extends AppCompatActivity {
         binding.serverIpEdit.setText(settingsProvider.getServerIp());
         binding.serverPortEdit.setText(String.valueOf(settingsProvider.getServerPort()));
         binding.jwtEdit.setText(settingsProvider.getJwt());
+        binding.keepTunnelAsleepSwitch.setChecked(settingsProvider.isKeepTunnelWhileAsleep());
     }
 
     private void saveSettings() {
@@ -114,6 +126,7 @@ public class SettingsActivity extends AppCompatActivity {
         }
 
         settingsProvider.saveSettings(serverIp, serverPort, jwt);
+        settingsProvider.saveKeepTunnelWhileAsleep(binding.keepTunnelAsleepSwitch.isChecked());
 
         Toast.makeText(this, R.string.settings_saved, Toast.LENGTH_SHORT).show();
         finish();
@@ -147,6 +160,39 @@ public class SettingsActivity extends AppCompatActivity {
             binding.jwtExpirationLabel.setText(getString(R.string.settings_jwt_expiration_unknown));
             binding.jwtExpirationLabel.setTextColor(Color.GRAY);
         }
+    }
+
+    /**
+     * Keeping the tunnel through a sleep only works if the app is exempt from battery optimization:
+     * Doze ignores wake locks and freezes the app's network, so the keepalive stops answering the
+     * server's PING and the node evicts the connection — exactly the drop the switch is meant to stop.
+     * Ask once, when the switch is turned on and the exemption is missing.
+     */
+    @SuppressLint("BatteryLife")
+    private void promptBatteryOptimizationIfNeeded() {
+        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+        if (pm == null || pm.isIgnoringBatteryOptimizations(getPackageName())) {
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.settings_battery_optimization_title)
+                .setMessage(R.string.settings_battery_optimization_message)
+                .setPositiveButton(R.string.settings_battery_optimization_open, (d, which) -> {
+                    Intent request = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                            Uri.parse("package:" + getPackageName()));
+                    try {
+                        startActivity(request);
+                    } catch (ActivityNotFoundException e) {
+                        // Some OEM builds hide the per-app dialog; fall back to the system list.
+                        try {
+                            startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+                        } catch (ActivityNotFoundException ignored) {
+                            Toast.makeText(this, R.string.settings_battery_optimization_title, Toast.LENGTH_LONG).show();
+                        }
+                    }
+                })
+                .setNegativeButton(R.string.settings_battery_optimization_later, null)
+                .show();
     }
 
     // ==================== Static Accessors (for backward compatibility) ====================

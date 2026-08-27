@@ -51,4 +51,11 @@
     <string name="validation_port_invalid">Порт нөмірі дұрыс емес</string>
     <string name="validation_jwt_empty">JWT токен теңшелмеген</string>
     <string name="validation_jwt_invalid">JWT токен пішімі дұрыс емес</string>
+
+    <string name="settings_keep_tunnel_asleep">Ұйқы кезінде туннельді ұстау</string>
+    <string name="settings_keep_tunnel_asleep_hint">Экран сөнгенде байланыс үзілмейді — жүктеулер, қоңыраулар және мессенджерлер ұйқыдан аман өтеді. Батареяны көбірек жұмсайды. Өшірулі: туннель ұйықтатылады, ашық сеанстар үзіледі.</string>
+    <string name="settings_battery_optimization_title">Батарея оптимизациясын өшіру</string>
+    <string name="settings_battery_optimization_message">Doze режимінде Android қолданбаны бәрібір ұйықтатады және туннель үзіледі. MyVPN шектеусіз жұмыс істесін бе?</string>
+    <string name="settings_battery_optimization_open">Параметрлерді ашу</string>
+    <string name="settings_battery_optimization_later">Кейінірек</string>
 </resources>
